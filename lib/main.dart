@@ -2,6 +2,8 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
 import 'firebase_options.dart';
+import 'follow.dart';
+import 'safety_mode.dart';
 
 const ink = Color(0xFF263448);
 const muted = Color(0xFF7D8285);
@@ -233,6 +235,14 @@ class _Overview extends StatelessWidget {
               ),
             ],
           ),
+          const SizedBox(height: 14),
+          _FollowMeBanner(
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (context) => const FollowPage()),
+              );
+            },
+          ),
           const SizedBox(height: 27),
           const _SectionTitle(title: 'Your safety circle', action: 'Manage'),
           const SizedBox(height: 12),
@@ -364,8 +374,12 @@ class _SafetyCard extends StatelessWidget {
           SizedBox(
             width: double.infinity,
             child: GestureDetector(
-              onLongPress: () =>
-                  onMessage('Your safety circle has been alerted.'),
+              onLongPress: () {
+                onMessage('Your safety circle has been alerted.');
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (context) => const SafetyModePage()),
+                );
+              },
               child: Container(
                 height: 62,
                 decoration: BoxDecoration(
@@ -443,6 +457,67 @@ class _QuickAction extends StatelessWidget {
                 ),
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FollowMeBanner extends StatelessWidget {
+  const _FollowMeBanner({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(20),
+      onTap: onTap,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          color: card,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: const Color(0xFFECE9E0)),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x08263448),
+              blurRadius: 10,
+              offset: Offset(0, 3),
+            ),
+          ],
+        ),
+        child: const Row(
+          children: [
+            CircleAvatar(
+              radius: 20,
+              backgroundColor: sand,
+              child: Icon(Icons.radar_rounded, color: ink, size: 20),
+            ),
+            SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Someone may be following me?',
+                    style: TextStyle(
+                      color: ink,
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  SizedBox(height: 2),
+                  Text(
+                    'Scan nearby BLE signals & enter safety mode',
+                    style: TextStyle(color: muted, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right_rounded, color: muted),
           ],
         ),
       ),

@@ -20,9 +20,21 @@ import UIKit
     channel.setMethodCallHandler { call, result in
       guard call.method == "composeSms",
             let arguments = call.arguments as? [String: Any],
-            let recipient = arguments["recipient"] as? String,
             let body = arguments["body"] as? String else {
         result(FlutterMethodNotImplemented)
+        return
+      }
+      let recipients: [String]
+      if let values = arguments["recipients"] as? [String] {
+        recipients = values
+      } else if let recipient = arguments["recipient"] as? String {
+        recipients = [recipient]
+      } else {
+        result(FlutterError(
+          code: "invalid_recipients",
+          message: "No SMS recipients were provided",
+          details: nil
+        ))
         return
       }
 
@@ -37,7 +49,7 @@ import UIKit
 
       DispatchQueue.main.async {
         let composer = MFMessageComposeViewController()
-        composer.recipients = [recipient]
+        composer.recipients = recipients
         composer.body = body
         composer.messageComposeDelegate = self
         self.topViewController()?.present(composer, animated: true)

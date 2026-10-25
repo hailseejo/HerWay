@@ -7,7 +7,8 @@ void main() {
     await tester.pumpWidget(const HerWayApp(firebaseReady: true));
 
     expect(find.text('Good evening, Alex'), findsOneWidget);
-    expect(find.text('PRESS & HOLD FOR SOS'), findsOneWidget);
+    expect(find.text('CALL EMERGENCY SERVICES (112)'), findsOneWidget);
+    expect(find.text('PRESS TO INFORM INNER CIRCLE'), findsOneWidget);
     expect(find.text('Your safety circle'), findsOneWidget);
   });
 }

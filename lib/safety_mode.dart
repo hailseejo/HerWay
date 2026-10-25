@@ -18,15 +18,20 @@ const _safeGreen = Color(0xFF73A58C);
 
 /// Discreet user-triggered safety mode screen with working SOS and community responder network.
 class SafetyModePage extends StatefulWidget {
-  const SafetyModePage({super.key});
+  const SafetyModePage({super.key, this.userName, this.userPhone});
+
+  final String? userName;
+  final String? userPhone;
 
   @override
   State<SafetyModePage> createState() => _SafetyModePageState();
 }
 
 class _SafetyModePageState extends State<SafetyModePage> {
-  final CommunitySafetyService _communityService = CommunitySafetyService.instance;
+  final CommunitySafetyService _communityService =
+      CommunitySafetyService.instance;
   StreamSubscription<CommunityDistressAlert?>? _alertSubscription;
+  StreamSubscription<CommunityDistressAlert?>? _incomingAlertSubscription;
 
   // Screen state
   bool _isDiscreetDark = false;
@@ -41,7 +46,7 @@ class _SafetyModePageState extends State<SafetyModePage> {
 
   // Community helper state
   CommunityDistressAlert? _activeDistressAlert;
-  String _userPhoneNumber = '+1 (555) 019-2834';
+  String _userPhoneNumber = '';
 
   // Check-in state
   Timer? _checkInTimer;
@@ -60,17 +65,33 @@ class _SafetyModePageState extends State<SafetyModePage> {
                 '${alert.acceptedBy?.name ?? "A nearby helper"} accepted your help request! They have your phone number and are calling now.';
           }
         });
+        _incomingAlertSubscription =
+            _communityService.incomingAlertStream.listen((alert) {
+          if (!mounted || alert == null) return;
+          setState(() {
+            _activeDistressAlert = alert;
+            _statusBanner =
+                'A nearby HerWay user needs help. Review the alert and choose whether to respond.';
+          });
+        });
       }
     });
   }
 
   Future<void> _initCommunityService() async {
     await _communityService.init();
+    final name = widget.userName?.trim();
+    final phone = widget.userPhone?.trim();
+    if (name != null && name.isNotEmpty && phone != null && phone.isNotEmpty) {
+      await _communityService.updateProfile(name: name, phone: phone);
+    }
     if (mounted) {
       setState(() {
-        _userPhoneNumber = _communityService.userPhone;
+        _userPhoneNumber =
+            phone?.isNotEmpty == true ? phone! : _communityService.userPhone;
         _activeDistressAlert = _communityService.currentAlert;
-        if (_activeDistressAlert != null && _activeDistressAlert!.isBroadcasting) {
+        if (_activeDistressAlert != null &&
+            _activeDistressAlert!.isBroadcasting) {
           _isSosActive = true;
         }
       });
@@ -82,6 +103,7 @@ class _SafetyModePageState extends State<SafetyModePage> {
     _sosTimer?.cancel();
     _checkInTimer?.cancel();
     _alertSubscription?.cancel();
+    _incomingAlertSubscription?.cancel();
     super.dispose();
   }
 
@@ -132,19 +154,14 @@ class _SafetyModePageState extends State<SafetyModePage> {
 
     // 2. Broadcast distress to nearby community members having the app
     await _communityService.broadcastDistress(
-      threatDescription: 'Someone may be following me! Urgent assistance needed.',
+      threatDescription:
+          'Someone may be following me! Urgent assistance needed.',
       position: _currentPosition,
       customPhone: _userPhoneNumber,
     );
 
-    // 3. For immediate local testing, simulate a helper accepting after 4s
-    _communityService.simulateNearbyHelperAccepting(
-      helperName: 'Sarah (Nearby Community Member)',
-      helperDistance: '~120 meters away',
-      delay: const Duration(seconds: 4),
-    );
-
-    _showMessage('SOS broadcasted to nearby community & emergency contacts!');
+    _showMessage(
+        'SOS broadcasted to nearby HerWay users and emergency contacts.');
   }
 
   void _cancelSos() {
@@ -187,16 +204,10 @@ class _SafetyModePageState extends State<SafetyModePage> {
       } catch (_) {}
 
       await _communityService.broadcastDistress(
-        threatDescription: 'Someone is following me. Please call me or come into view.',
+        threatDescription:
+            'Someone is following me. Please call me or come into view.',
         position: pos,
         customPhone: _userPhoneNumber,
-      );
-
-      // Trigger automatic simulation so the user can see the accepted state
-      _communityService.simulateNearbyHelperAccepting(
-        helperName: 'Sarah (Nearby Community Member)',
-        helperDistance: '~120 meters away',
-        delay: const Duration(seconds: 4),
       );
 
       _showMessage('Help request sent to nearby HerWay community members!');
@@ -213,7 +224,8 @@ class _SafetyModePageState extends State<SafetyModePage> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: const Text(
           'Your Contact Phone Number',
-          style: TextStyle(color: _ink, fontWeight: FontWeight.bold, fontSize: 18),
+          style:
+              TextStyle(color: _ink, fontWeight: FontWeight.bold, fontSize: 18),
         ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -232,7 +244,8 @@ class _SafetyModePageState extends State<SafetyModePage> {
               decoration: InputDecoration(
                 labelText: 'Phone Number',
                 prefixIcon: const Icon(Icons.phone_rounded, color: _tan),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+                border:
+                    OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
               ),
             ),
           ],
@@ -246,7 +259,8 @@ class _SafetyModePageState extends State<SafetyModePage> {
             style: ElevatedButton.styleFrom(
               backgroundColor: _ink,
               foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
             ),
             onPressed: () => Navigator.pop(context, controller.text.trim()),
             child: const Text('Save Number'),
@@ -330,12 +344,13 @@ class _SafetyModePageState extends State<SafetyModePage> {
               id: 'SIM-1',
               userName: 'Alex',
               userPhone: _userPhoneNumber,
-              threatDescription: 'Someone may be following me! Need someone on the line.',
+              threatDescription:
+                  'Someone may be following me! Need someone on the line.',
               timestamp: DateTime.now(),
               status: DistressStatus.broadcasting,
             ),
         onAccepted: (helperName, distance) {
-          _communityService.acceptAlertByHelper(
+          return _communityService.acceptAlertByHelper(
             alertId: _activeDistressAlert?.id ?? 'SIM-1',
             helperName: helperName,
             helperDistance: distance,
@@ -427,7 +442,8 @@ class _SafetyModePageState extends State<SafetyModePage> {
               ],
 
               // Active Helper Acceptance Banner (if helper accepted)
-              if (_activeDistressAlert != null && _activeDistressAlert!.isAccepted) ...[
+              if (_activeDistressAlert != null &&
+                  _activeDistressAlert!.isAccepted) ...[
                 _buildHelperAcceptedCard(),
                 const SizedBox(height: 18),
               ],
@@ -485,7 +501,9 @@ class _SafetyModePageState extends State<SafetyModePage> {
       decoration: BoxDecoration(
         color: isEmergency
             ? _rust.withValues(alpha: 0.15)
-            : (isAccepted ? _safeGreen.withValues(alpha: 0.15) : _softBlue.withValues(alpha: 0.6)),
+            : (isAccepted
+                ? _safeGreen.withValues(alpha: 0.15)
+                : _softBlue.withValues(alpha: 0.6)),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
           color: isEmergency
@@ -498,7 +516,9 @@ class _SafetyModePageState extends State<SafetyModePage> {
           Icon(
             isEmergency
                 ? Icons.warning_amber_rounded
-                : (isAccepted ? Icons.check_circle_rounded : Icons.info_outline_rounded),
+                : (isAccepted
+                    ? Icons.check_circle_rounded
+                    : Icons.info_outline_rounded),
             color: isEmergency ? _rust : (isAccepted ? _safeGreen : _ink),
             size: 20,
           ),
@@ -550,7 +570,8 @@ class _SafetyModePageState extends State<SafetyModePage> {
                   color: _safeGreen,
                   shape: BoxShape.circle,
                 ),
-                child: const Icon(Icons.phone_in_talk_rounded, color: Colors.white, size: 20),
+                child: const Icon(Icons.phone_in_talk_rounded,
+                    color: Colors.white, size: 20),
               ),
               const SizedBox(width: 12),
               Expanded(
@@ -594,7 +615,8 @@ class _SafetyModePageState extends State<SafetyModePage> {
                 Expanded(
                   child: Text(
                     'Helper is $helperDistance. They were provided your phone number ($_userPhoneNumber) and are calling you now. Please keep your line free.',
-                    style: const TextStyle(color: _ink, fontSize: 12, height: 1.3),
+                    style:
+                        const TextStyle(color: _ink, fontSize: 12, height: 1.3),
                   ),
                 ),
               ],
@@ -642,7 +664,7 @@ class _SafetyModePageState extends State<SafetyModePage> {
           const SizedBox(height: 8),
           Text(
             _isSosActive
-                ? 'Your emergency distress beacon is active. One-tap actions below connect you to 911 or alert emergency contacts.'
+                ? 'Your emergency distress beacon is active. One-tap actions below connect you to India\'s emergency number 112 or alert emergency contacts.'
                 : 'Arms emergency actions. If triggered, broadcasts your distress to nearby HerWay users and prepares one-touch emergency calls.',
             style: const TextStyle(color: _muted, fontSize: 12),
           ),
@@ -690,7 +712,7 @@ class _SafetyModePageState extends State<SafetyModePage> {
             // Active SOS Emergency Actions
             Column(
               children: [
-                // Call 911 Direct
+                // Call India's unified emergency number
                 SizedBox(
                   width: double.infinity,
                   height: 48,
@@ -705,7 +727,31 @@ class _SafetyModePageState extends State<SafetyModePage> {
                     onPressed: () => _communityService.callEmergencyServices(),
                     icon: const Icon(Icons.call_rounded, size: 20),
                     label: const Text(
-                      'CALL EMERGENCY SERVICES (911)',
+                      'CALL EMERGENCY SERVICES (112)',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 13,
+                        letterSpacing: 0.6,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: _rust,
+                      side: const BorderSide(color: _rust),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
+                    onPressed: () => _communityService.launchPhoneCall('14490'),
+                    icon: const Icon(Icons.support_agent_rounded, size: 20),
+                    label: const Text(
+                      'CALL MAHILA POLICE (14490)',
                       style: TextStyle(
                         fontWeight: FontWeight.w800,
                         fontSize: 13,
@@ -734,8 +780,9 @@ class _SafetyModePageState extends State<SafetyModePage> {
                           ? '\nLocation: https://www.openstreetmap.org/?mlat=${pos.latitude}&mlon=${pos.longitude}'
                           : '';
                       _communityService.launchSms(
-                        phoneNumber: '911',
-                        message: 'HerWay SOS Alert from Alex: Someone is following me.$locString',
+                        phoneNumber: '112',
+                        message:
+                            'HerWay SOS Alert from Alex: Someone is following me.$locString',
                       );
                     },
                     icon: const Icon(Icons.message_rounded, size: 18),
@@ -749,7 +796,8 @@ class _SafetyModePageState extends State<SafetyModePage> {
                   width: double.infinity,
                   child: TextButton.icon(
                     onPressed: _standDownSos,
-                    icon: const Icon(Icons.check_circle_outline_rounded, color: _safeGreen),
+                    icon: const Icon(Icons.check_circle_outline_rounded,
+                        color: _safeGreen),
                     label: const Text(
                       'I Am Safe — Stand Down SOS',
                       style: TextStyle(
@@ -794,7 +842,8 @@ class _SafetyModePageState extends State<SafetyModePage> {
   }
 
   // 2. Ask Nearby People Having the Same App for Help Section
-  Widget _buildNearbyCommunitySection(Color cardBg, Color borderColor, Color fg) {
+  Widget _buildNearbyCommunitySection(
+      Color cardBg, Color borderColor, Color fg) {
     final bool isBroadcasting = _activeDistressAlert?.isBroadcasting == true;
 
     return Container(
@@ -831,14 +880,16 @@ class _SafetyModePageState extends State<SafetyModePage> {
               ),
               if (isBroadcasting)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
                     color: _tan.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: const Text(
                     'BROADCASTING',
-                    style: TextStyle(color: _tan, fontSize: 10, fontWeight: FontWeight.bold),
+                    style: TextStyle(
+                        color: _tan, fontSize: 10, fontWeight: FontWeight.bold),
                   ),
                 ),
             ],
@@ -884,7 +935,8 @@ class _SafetyModePageState extends State<SafetyModePage> {
                   onPressed: _editPhoneNumber,
                   child: const Text(
                     'Change',
-                    style: TextStyle(color: _tan, fontWeight: FontWeight.bold, fontSize: 12),
+                    style: TextStyle(
+                        color: _tan, fontWeight: FontWeight.bold, fontSize: 12),
                   ),
                 ),
               ],
@@ -906,14 +958,17 @@ class _SafetyModePageState extends State<SafetyModePage> {
               ),
               onPressed: _toggleCommunityBroadcast,
               icon: Icon(
-                isBroadcasting ? Icons.stop_circle_outlined : Icons.record_voice_over_rounded,
+                isBroadcasting
+                    ? Icons.stop_circle_outlined
+                    : Icons.record_voice_over_rounded,
                 size: 19,
               ),
               label: Text(
                 isBroadcasting
                     ? 'STOP COMMUNITY BROADCAST'
                     : 'ASK NEARBY USERS FOR HELP',
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                style:
+                    const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
               ),
             ),
           ),
@@ -926,10 +981,12 @@ class _SafetyModePageState extends State<SafetyModePage> {
               style: OutlinedButton.styleFrom(
                 foregroundColor: fg,
                 side: BorderSide(color: borderColor),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
               ),
               onPressed: _showHelperExperienceSheet,
-              icon: const Icon(Icons.phone_forwarded_rounded, size: 17, color: _tan),
+              icon: const Icon(Icons.phone_forwarded_rounded,
+                  size: 17, color: _tan),
               label: const Text(
                 'Preview Helper Experience (Accept & Call)',
                 style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
@@ -1134,7 +1191,7 @@ class _HelperResponseSheet extends StatefulWidget {
   });
 
   final CommunityDistressAlert alert;
-  final Function(String helperName, String distance) onAccepted;
+  final Future<String?> Function(String helperName, String distance) onAccepted;
 
   @override
   State<_HelperResponseSheet> createState() => _HelperResponseSheetState();
@@ -1142,6 +1199,8 @@ class _HelperResponseSheet extends StatefulWidget {
 
 class _HelperResponseSheetState extends State<_HelperResponseSheet> {
   bool _accepted = false;
+  bool _isAccepting = false;
+  String? _revealedPhone;
 
   @override
   void initState() {
@@ -1149,9 +1208,18 @@ class _HelperResponseSheetState extends State<_HelperResponseSheet> {
     _accepted = widget.alert.isAccepted;
   }
 
-  void _handleAccept() {
-    setState(() => _accepted = true);
-    widget.onAccepted('Sarah (Nearby Community Member)', '~120 meters away');
+  Future<void> _handleAccept() async {
+    setState(() {
+      _accepted = true;
+      _isAccepting = true;
+    });
+    final phone = await widget.onAccepted('Nearby HerWay user', 'Nearby');
+    if (mounted) {
+      setState(() {
+        _isAccepting = false;
+        _revealedPhone = phone;
+      });
+    }
   }
 
   @override
@@ -1187,7 +1255,8 @@ class _HelperResponseSheetState extends State<_HelperResponseSheet> {
                   color: _rust.withValues(alpha: 0.15),
                   shape: BoxShape.circle,
                 ),
-                child: const Icon(Icons.notifications_active_rounded, color: _rust, size: 22),
+                child: const Icon(Icons.notifications_active_rounded,
+                    color: _rust, size: 22),
               ),
               const SizedBox(width: 12),
               const Expanded(
@@ -1234,7 +1303,10 @@ class _HelperResponseSheetState extends State<_HelperResponseSheet> {
                   children: [
                     Text(
                       'User: ${widget.alert.userName}',
-                      style: const TextStyle(color: _ink, fontWeight: FontWeight.bold, fontSize: 14),
+                      style: const TextStyle(
+                          color: _ink,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14),
                     ),
                     const Row(
                       children: [
@@ -1242,7 +1314,10 @@ class _HelperResponseSheetState extends State<_HelperResponseSheet> {
                         SizedBox(width: 4),
                         Text(
                           '~120m away',
-                          style: TextStyle(color: _muted, fontSize: 12, fontWeight: FontWeight.bold),
+                          style: TextStyle(
+                              color: _muted,
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold),
                         ),
                       ],
                     ),
@@ -1251,7 +1326,8 @@ class _HelperResponseSheetState extends State<_HelperResponseSheet> {
                 const SizedBox(height: 6),
                 Text(
                   '"${widget.alert.threatDescription}"',
-                  style: const TextStyle(color: _ink, fontSize: 13, fontStyle: FontStyle.italic),
+                  style: const TextStyle(
+                      color: _ink, fontSize: 13, fontStyle: FontStyle.italic),
                 ),
               ],
             ),
@@ -1272,7 +1348,8 @@ class _HelperResponseSheetState extends State<_HelperResponseSheet> {
                     style: OutlinedButton.styleFrom(
                       foregroundColor: _ink,
                       padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14)),
                     ),
                     onPressed: () => Navigator.pop(context),
                     child: const Text('Decline'),
@@ -1286,13 +1363,15 @@ class _HelperResponseSheetState extends State<_HelperResponseSheet> {
                       backgroundColor: _safeGreen,
                       foregroundColor: Colors.white,
                       padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14)),
                     ),
-                    onPressed: _handleAccept,
+                    onPressed: _isAccepting ? null : _handleAccept,
                     icon: const Icon(Icons.check_rounded, size: 20),
                     label: const Text(
                       'Accept & Help',
-                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                      style:
+                          TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                     ),
                   ),
                 ),
@@ -1312,7 +1391,8 @@ class _HelperResponseSheetState extends State<_HelperResponseSheet> {
                 children: [
                   const Row(
                     children: [
-                      Icon(Icons.lock_open_rounded, color: _safeGreen, size: 18),
+                      Icon(Icons.lock_open_rounded,
+                          color: _safeGreen, size: 18),
                       SizedBox(width: 8),
                       Text(
                         'CONTACT PHONE NUMBER REVEALED:',
@@ -1327,7 +1407,7 @@ class _HelperResponseSheetState extends State<_HelperResponseSheet> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    widget.alert.userPhone,
+                    _revealedPhone ?? widget.alert.userPhone,
                     style: const TextStyle(
                       color: _ink,
                       fontSize: 22,
@@ -1353,15 +1433,18 @@ class _HelperResponseSheetState extends State<_HelperResponseSheet> {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: _safeGreen,
                   foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14)),
                 ),
                 onPressed: () {
-                  CommunitySafetyService.instance.launchPhoneCall(widget.alert.userPhone);
+                  CommunitySafetyService.instance
+                      .launchPhoneCall(widget.alert.userPhone);
                 },
                 icon: const Icon(Icons.phone_rounded, size: 22),
                 label: Text(
                   'CALL ${widget.alert.userName.toUpperCase()} NOW',
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 14),
                 ),
               ),
             ),
@@ -1375,12 +1458,14 @@ class _HelperResponseSheetState extends State<_HelperResponseSheet> {
                 style: OutlinedButton.styleFrom(
                   foregroundColor: _ink,
                   side: const BorderSide(color: Color(0xFFD5CEC0)),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14)),
                 ),
                 onPressed: () {
                   CommunitySafetyService.instance.launchSms(
                     phoneNumber: widget.alert.userPhone,
-                    message: 'Hi ${widget.alert.userName}, I accepted your HerWay safety alert. I am nearby. Are you safe?',
+                    message:
+                        'Hi ${widget.alert.userName}, I accepted your HerWay safety alert. I am nearby. Are you safe?',
                   );
                 },
                 icon: const Icon(Icons.sms_outlined, size: 18),

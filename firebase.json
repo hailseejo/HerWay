@@ -1,1 +1,43 @@
-{"flutter":{"platforms":{"macos":{"default":{"projectId":"herway-478c3","appId":"1:46902608009:ios:ea1ef626416b4e6a47c658","uploadDebugSymbols":false,"fileOutput":"macos/Runner/GoogleService-Info.plist"}},"dart":{"lib/firebase_options.dart":{"projectId":"herway-478c3","configurations":{"android":"1:46902608009:android:c3f1383d78fd677247c658","ios":"1:46902608009:ios:ea1ef626416b4e6a47c658","macos":"1:46902608009:ios:ea1ef626416b4e6a47c658","web":"1:46902608009:web:265f11d14f559f7647c658"}}},"android":{"default":{"projectId":"herway-478c3","appId":"1:46902608009:android:c3f1383d78fd677247c658","fileOutput":"android/app/google-services.json"}},"ios":{"default":{"projectId":"herway-478c3","appId":"1:46902608009:ios:ea1ef626416b4e6a47c658","uploadDebugSymbols":false,"fileOutput":"ios/Runner/GoogleService-Info.plist"}}}}}
+{
+  "flutter": {
+    "platforms": {
+      "macos": {
+        "default": {
+          "projectId": "herway-478c3",
+          "appId": "1:46902608009:ios:ea1ef626416b4e6a47c658",
+          "uploadDebugSymbols": false,
+          "fileOutput": "macos/Runner/GoogleService-Info.plist"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "herway-478c3",
+          "configurations": {
+            "android": "1:46902608009:android:c3f1383d78fd677247c658",
+            "ios": "1:46902608009:ios:ea1ef626416b4e6a47c658",
+            "macos": "1:46902608009:ios:ea1ef626416b4e6a47c658",
+            "web": "1:46902608009:web:265f11d14f559f7647c658"
+          }
+        }
+      },
+      "android": {
+        "default": {
+          "projectId": "herway-478c3",
+          "appId": "1:46902608009:android:c3f1383d78fd677247c658",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "ios": {
+        "default": {
+          "projectId": "herway-478c3",
+          "appId": "1:46902608009:ios:ea1ef626416b4e6a47c658",
+          "uploadDebugSymbols": false,
+          "fileOutput": "ios/Runner/GoogleService-Info.plist"
+        }
+      }
+    },
+    "firestore": {
+      "rules": "firestore.rules"
+    }
+  }
+}

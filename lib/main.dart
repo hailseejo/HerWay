@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:firebase_core/firebase_core.dart';
+import 'package:battery_plus/battery_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -24,6 +26,12 @@ const tan = Color(0xFFB58B5D);
 const rust = Color(0xFFB56E4E);
 const softBlue = Color(0xFFE7EDF0);
 
+String _formatOverviewDuration(int totalSeconds) {
+  final minutes = totalSeconds ~/ 60;
+  final seconds = totalSeconds % 60;
+  return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+}
+
 class TrustedContact {
   const TrustedContact({required this.name, required this.phone});
 
@@ -42,6 +50,45 @@ class TrustedContact {
       phone: value.substring(separator + 1),
     );
   }
+}
+
+class RideTrip {
+  const RideTrip({
+    required this.vehicleType,
+    required this.registration,
+    required this.driverName,
+    required this.driverPhone,
+    required this.destination,
+    required this.tripInfo,
+  });
+
+  final String vehicleType;
+  final String registration;
+  final String driverName;
+  final String driverPhone;
+  final String destination;
+  final String tripInfo;
+
+  String get summary =>
+      '$vehicleType · $registration · Destination: $destination';
+
+  Map<String, String> toJson() => {
+        'vehicleType': vehicleType,
+        'registration': registration,
+        'driverName': driverName,
+        'driverPhone': driverPhone,
+        'destination': destination,
+        'tripInfo': tripInfo,
+      };
+
+  factory RideTrip.fromJson(Map<String, dynamic> json) => RideTrip(
+        vehicleType: json['vehicleType'] as String? ?? 'Taxi',
+        registration: json['registration'] as String? ?? '',
+        driverName: json['driverName'] as String? ?? '',
+        driverPhone: json['driverPhone'] as String? ?? '',
+        destination: json['destination'] as String? ?? '',
+        tripInfo: json['tripInfo'] as String? ?? '',
+      );
 }
 
 enum AlertStatus { idle, prepared, composerOpened, acknowledged }
@@ -89,10 +136,12 @@ class _SafetyDashboardState extends State<SafetyDashboard> {
   bool _sharingLocation = false;
   final _storage = const FlutterSecureStorage();
   final _contacts = <TrustedContact>[];
+  final _selectedContacts = <TrustedContact>{};
   int _selectedContact = 0;
   AlertStatus _alertStatus = AlertStatus.idle;
   final _bluetooth = AppBluetoothService();
   final _nearbyPlacesService = NearbyPlacesService();
+  final _battery = Battery();
   StreamSubscription<List<BleDeviceObservation>>? _nearbySubscription;
   StreamSubscription<Object>? _bluetoothErrorSubscription;
   List<BleDeviceObservation> _nearbyDevices = [];
@@ -101,11 +150,18 @@ class _SafetyDashboardState extends State<SafetyDashboard> {
   List<NearbyPlace> _nearbyPlaces = [];
   bool _isLoadingPlaces = false;
   String? _placesError;
+  StreamSubscription<BatteryState>? _batterySubscription;
+  bool _lowBatteryWarningShown = false;
+  RideTrip? _activeRide;
+  Timer? _checkInTimer;
+  int _checkInRemainingSeconds = 0;
 
   @override
   void initState() {
     super.initState();
     _loadContacts();
+    _loadRide();
+    _startBatteryMonitoring();
     if (!_supportsBluetooth) return;
     _nearbySubscription = _bluetooth.observationsStream.listen((devices) {
       if (mounted) setState(() => _nearbyDevices = devices);
@@ -139,7 +195,144 @@ class _SafetyDashboardState extends State<SafetyDashboard> {
     _bluetoothErrorSubscription?.cancel();
     _bluetooth.dispose();
     _nearbyPlacesService.dispose();
+    _batterySubscription?.cancel();
+    _checkInTimer?.cancel();
     super.dispose();
+  }
+
+  Future<void> _startBatteryMonitoring() async {
+    try {
+      final level = await _battery.batteryLevel;
+      _handleBatteryLevel(level);
+      _batterySubscription = _battery.onBatteryStateChanged.listen((_) async {
+        _handleBatteryLevel(await _battery.batteryLevel);
+      });
+    } catch (_) {
+      // Battery monitoring is unavailable on unsupported platforms.
+    }
+  }
+
+  void _handleBatteryLevel(int level) {
+    if (!mounted) return;
+    if (level > 10) {
+      _lowBatteryWarningShown = false;
+      return;
+    }
+    if (_lowBatteryWarningShown) return;
+    _lowBatteryWarningShown = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _showLowBatteryWarning(level);
+    });
+  }
+
+  Future<void> _showLowBatteryWarning(int level) async {
+    final share = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: Text('⚠️ LOW BATTERY — $level% REMAINING'),
+        content: const Text(
+          'Your phone may switch off soon. Stay connected to your trusted circle.\n\nWould you like to share your current location with your trusted contacts before your battery runs out?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text("I'll do this later"),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Share location via SMS'),
+          ),
+        ],
+      ),
+    );
+    if (share == true) {
+      await _shareLowBatteryLocation();
+    }
+  }
+
+  Future<void> _shareLowBatteryLocation() async {
+    final selectedContacts =
+        _contacts.where(_selectedContacts.contains).toList();
+    if (selectedContacts.isEmpty) {
+      _message('Select at least one trusted contact before sharing.');
+      return;
+    }
+    final recipientCount = selectedContacts.length;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Share with your trusted circle?'),
+        content: Text(
+          'One SMS will be prepared for $recipientCount selected trusted ${recipientCount == 1 ? 'contact' : 'contacts'}. You can review it before sending.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final position = await _getLocation();
+    if (!mounted || position == null) return;
+    final phones = selectedContacts.map((contact) => contact.phone).toList();
+    final body =
+        'Hi, my phone battery is critically low, and I may become unreachable soon. Here is my current location so you can check on me if needed:\n\nhttps://www.openstreetmap.org/?mlat=${position.latitude}&mlon=${position.longitude}#map=18/${position.latitude}/${position.longitude}\n\nI\'ll update you when I can.';
+    await _openSmsComposer(phones, body);
+  }
+
+  Future<bool> _openSmsComposer(List<String> phones, String body) async {
+    if (phones.isEmpty) {
+      _message('Select at least one trusted contact before sharing.');
+      return false;
+    }
+    final isIos = Theme.of(context).platform == TargetPlatform.iOS;
+    if (isIos) {
+      try {
+        final opened =
+            await const MethodChannel('herway/sms').invokeMethod<bool>(
+          'composeSms',
+          {'recipients': phones, 'body': body},
+        );
+        if (!mounted) return false;
+        if (opened != true) {
+          _message('SMS is unavailable on this device.');
+          return false;
+        } else {
+          _message('Location message prepared. Review it and press Send.');
+          return true;
+        }
+      } on PlatformException {
+        if (mounted) _message('Messages could not open on this device.');
+        return false;
+      }
+    }
+    try {
+      final opened = await const MethodChannel('herway/sms').invokeMethod<bool>(
+        'composeSms',
+        {'recipients': phones, 'body': body},
+      );
+      if (!mounted) return false;
+      if (opened == true) {
+        _message(
+            'One message prepared for ${phones.length} contacts. Review it and press Send.');
+        return true;
+      } else {
+        _message('Your messaging app is unavailable on this device.');
+        return false;
+      }
+    } on PlatformException {
+      if (mounted) {
+        _message('Your messaging app is unavailable on this device.');
+      }
+      return false;
+    }
   }
 
   Future<void> _loadNearbyPlaces() async {
@@ -250,7 +443,102 @@ class _SafetyDashboardState extends State<SafetyDashboard> {
         // Ignore corrupted entries without exposing them in the UI.
       }
     }
-    setState(() => _contacts.addAll(loaded));
+    setState(() {
+      _contacts.addAll(loaded);
+      _selectedContacts.addAll(loaded);
+    });
+  }
+
+  Future<void> _loadRide() async {
+    final stored = await _storage.read(key: 'active_ride');
+    if (!mounted || stored == null) return;
+    try {
+      final decoded = jsonDecode(stored);
+      if (decoded is! Map<String, dynamic>) {
+        throw const FormatException('Saved ride data is invalid.');
+      }
+      setState(() => _activeRide = RideTrip.fromJson(decoded));
+    } on FormatException {
+      // Ignore an invalid saved trip and let the user create a new one.
+    }
+  }
+
+  Future<void> _saveRide(RideTrip ride) async {
+    await _storage.write(key: 'active_ride', value: jsonEncode(ride.toJson()));
+    if (mounted) setState(() => _activeRide = ride);
+  }
+
+  Future<void> _addRide() async {
+    final ride = await showDialog<RideTrip>(
+      context: context,
+      builder: (context) => const _RideDialog(),
+    );
+    if (ride == null) return;
+    await _saveRide(ride);
+    _message(
+        'Ride details saved. Your trusted circle can be alerted if needed.');
+  }
+
+  Future<void> _clearRide() async {
+    await _storage.delete(key: 'active_ride');
+    if (mounted) setState(() => _activeRide = null);
+  }
+
+  Future<void> _sendRideAlert() async {
+    final ride = _activeRide;
+    final selectedContacts =
+        _contacts.where(_selectedContacts.contains).toList();
+    if (ride == null) return;
+    if (selectedContacts.isEmpty) {
+      _message('Select at least one trusted contact before sending.');
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Send ride safety alert?'),
+        content: Text(
+          'One SMS will be prepared for ${selectedContacts.length} selected trusted ${selectedContacts.length == 1 ? 'contact' : 'contacts'} with the vehicle, driver, destination, and trip details.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Prepare SMS'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final position = await _getLocation();
+    if (!mounted || position == null) {
+      if (mounted) {
+        _message(
+            'Ride alert was not prepared because your current location is unavailable.');
+      }
+      return;
+    }
+    final locationUrl =
+        'https://www.openstreetmap.org/?mlat=${position.latitude}&mlon=${position.longitude}#map=18/${position.latitude}/${position.longitude}';
+    final body = '''RIDE SAFETY ALERT
+I may be unsafe and need someone to check on my ride.
+
+Vehicle: ${ride.vehicleType}
+Registration: ${ride.registration}
+Driver: ${ride.driverName}
+Driver phone: ${ride.driverPhone.isEmpty ? 'Not provided' : ride.driverPhone}
+Destination: ${ride.destination}
+Trip information: ${ride.tripInfo.isEmpty ? 'Not provided' : ride.tripInfo}
+Current location: $locationUrl
+
+Please contact me and check on me if needed.''';
+    await _openSmsComposer(
+      selectedContacts.map((contact) => contact.phone).toList(),
+      body,
+    );
   }
 
   Future<void> _saveContacts() {
@@ -327,63 +615,43 @@ class _SafetyDashboardState extends State<SafetyDashboard> {
   }
 
   Future<void> _sendSosTo(TrustedContact contact) async {
-    final isIos = Theme.of(context).platform == TargetPlatform.iOS;
-    final consented = await _confirmComposer(contact.name);
+    await _sendSosToContacts([contact]);
+  }
+
+  Future<void> _sendSosToContacts(List<TrustedContact> contacts) async {
+    if (contacts.isEmpty) {
+      _message('Select at least one trusted contact before sending an SOS.');
+      return;
+    }
+    final names = contacts.map((contact) => contact.name).join(', ');
+    final consented = await _confirmComposer(names);
     if (!consented) return;
     final position = await _getLocation();
     if (!mounted) return;
-    final phone = contact.phone.trim();
-    if (!RegExp(r'^\+?[0-9]{7,15}$').hasMatch(phone)) {
-      _message(
-          'This contact has an invalid phone number. Please edit it first.');
-      return;
+    final phones = <String>[];
+    for (final contact in contacts) {
+      final phone = contact.phone.trim();
+      if (!RegExp(r'^\+?[0-9]{7,15}$').hasMatch(phone)) {
+        _message(
+            '${contact.name} has an invalid phone number. Please edit it first.');
+        return;
+      }
+      phones.add(phone);
     }
     final body = _alertMessage(position);
-    if (isIos) {
-      setState(() => _alertStatus = AlertStatus.prepared);
-      try {
-        final opened =
-            await const MethodChannel('herway/sms').invokeMethod<bool>(
-          'composeSms',
-          {'recipient': phone, 'body': body},
-        );
-        if (!mounted) return;
-        if (opened != true) {
-          _message(
-            'SMS is unavailable here. Use a physical iPhone with cellular messaging; the iOS simulator cannot send SMS.',
-          );
-          return;
-        }
-        setState(() => _alertStatus = AlertStatus.composerOpened);
-        _message('SOS prepared for ${contact.name}. Review it and press Send.');
-      } on PlatformException catch (error) {
-        if (error.code == 'sms_unavailable') {
-          _message(
-            'SMS is unavailable here. Use a physical iPhone with cellular messaging; the iOS simulator cannot send SMS.',
-          );
-        } else {
-          _message('Messages could not open. The SOS remains prepared.');
-        }
-      }
-      return;
-    }
-
-    final encodedBody = Uri.encodeComponent(body);
-    // iOS uses `&body=` after the recipient; Android uses `?body=`. Using
-    // the Android separator on iOS can open Messages with an empty To field.
-    final uri = Uri.parse('sms:$phone?body=$encodedBody');
     setState(() => _alertStatus = AlertStatus.prepared);
-    if (!await canLaunchUrl(uri) ||
-        !await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+    final opened = await _openSmsComposer(phones, body);
+    if (opened && mounted) {
+      setState(() => _alertStatus = AlertStatus.composerOpened);
       _message(
-        isIos
-            ? 'Messages could not open. Test on a physical iPhone; the iOS simulator cannot send SMS.'
-            : 'Your messaging app is unavailable. The SOS remains prepared.',
-      );
-      return;
+          'SOS prepared for ${contacts.length} contacts. Review it and press Send.');
     }
-    setState(() => _alertStatus = AlertStatus.composerOpened);
-    _message('SOS prepared for ${contact.name}. Review it and press Send.');
+  }
+
+  Future<void> _sendSosToSelectedContacts() async {
+    final selectedContacts =
+        _contacts.where(_selectedContacts.contains).toList();
+    await _sendSosToContacts(selectedContacts);
   }
 
   Future<void> _callContact(TrustedContact contact) async {
@@ -393,13 +661,120 @@ class _SafetyDashboardState extends State<SafetyDashboard> {
     }
   }
 
+  Future<void> _callEmergencyServices() async {
+    final uri = Uri(scheme: 'tel', path: '112');
+    if (!await canLaunchUrl(uri) ||
+        !await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+      _message(
+          'Emergency calling is unavailable on this device. Call 112 manually.');
+    }
+  }
+
+  Future<void> _chooseCheckInDuration() async {
+    final minutes = await showModalBottomSheet<int>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const ListTile(
+              title: Text('Start a safety check-in'),
+              subtitle:
+                  Text('If you do not cancel it, your circle will be alerted.'),
+            ),
+            for (final duration in [5, 15, 30, 60])
+              ListTile(
+                leading: const Icon(Icons.timer_outlined, color: tan),
+                title: Text(duration == 60 ? '1 hour' : '$duration minutes'),
+                onTap: () => Navigator.pop(context, duration),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (minutes == null) return;
+    _startCheckIn(minutes);
+  }
+
+  void _startCheckIn(int minutes) {
+    _checkInTimer?.cancel();
+    setState(() => _checkInRemainingSeconds = minutes * 60);
+    _checkInTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_checkInRemainingSeconds <= 1) {
+        timer.cancel();
+        if (mounted) {
+          setState(() => _checkInRemainingSeconds = 0);
+          _handleCheckInExpired();
+        }
+        return;
+      }
+      if (mounted) {
+        setState(() => _checkInRemainingSeconds--);
+      }
+    });
+    _message(
+        'Check-in started for ${minutes == 60 ? '1 hour' : '$minutes minutes'}.');
+  }
+
+  void _cancelCheckIn() {
+    _checkInTimer?.cancel();
+    setState(() => _checkInRemainingSeconds = 0);
+    _message('Check-in canceled. You marked yourself safe.');
+  }
+
+  Future<void> _handleCheckInExpired() async {
+    _message('Check-in expired. Preparing an alert for your trusted circle.');
+    final selectedContacts =
+        _contacts.where(_selectedContacts.contains).toList();
+    if (selectedContacts.isNotEmpty) {
+      final position = await _getLocation();
+      if (mounted) {
+        final location = position == null
+            ? 'Location unavailable.'
+            : 'Current location: https://www.openstreetmap.org/?mlat=${position.latitude}&mlon=${position.longitude}#map=18/${position.latitude}/${position.longitude}';
+        await _openSmsComposer(
+          selectedContacts.map((contact) => contact.phone).toList(),
+          'CHECK-IN ALERT\nI did not check in before my safety timer expired. Please check on me.\n\n$location',
+        );
+      }
+    } else {
+      _message('No trusted contacts are selected for the check-in alert.');
+    }
+    if (!mounted) return;
+    final call = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('Check-in expired'),
+        content: const Text(
+          'Your trusted-circle alert was prepared. If you are in immediate danger, call emergency services now.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Not now'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(context, true),
+            icon: const Icon(Icons.phone_in_talk_rounded),
+            label: const Text('Call 112'),
+          ),
+        ],
+      ),
+    );
+    if (call == true) await _callEmergencyServices();
+  }
+
   Future<void> _addContact() async {
     final result = await showDialog<TrustedContact>(
       context: context,
       builder: (context) => const _ContactDialog(),
     );
     if (result == null) return;
-    setState(() => _contacts.add(result));
+    setState(() {
+      _contacts.add(result);
+      _selectedContacts.add(result);
+    });
     await _saveContacts();
     _message('${result.name} was added to your safety circle.');
   }
@@ -426,6 +801,7 @@ class _SafetyDashboardState extends State<SafetyDashboard> {
     if (remove != true) return;
     setState(() {
       _contacts.remove(contact);
+      _selectedContacts.remove(contact);
       if (_selectedContact >= _contacts.length) {
         _selectedContact = _contacts.isEmpty ? 0 : _contacts.length - 1;
       }
@@ -495,12 +871,23 @@ class _SafetyDashboardState extends State<SafetyDashboard> {
               sharingLocation: _sharingLocation,
               onLocationChanged: (value) =>
                   setState(() => _sharingLocation = value),
+              checkInRemainingSeconds: _checkInRemainingSeconds,
+              onStartCheckIn: _chooseCheckInDuration,
+              onCancelCheckIn: _cancelCheckIn,
               firebaseReady: widget.firebaseReady,
               contacts: _contacts,
               selectedContact: _selectedContact,
+              selectedContacts: _selectedContacts,
               alertStatus: _alertStatus,
               onSelectContact: (value) =>
                   setState(() => _selectedContact = value),
+              onToggleContact: (contact) {
+                setState(() {
+                  if (!_selectedContacts.add(contact)) {
+                    _selectedContacts.remove(contact);
+                  }
+                });
+              },
               onAddContact: _addContact,
               onRemoveContact: _removeContact,
               onSendSos: () {
@@ -508,7 +895,7 @@ class _SafetyDashboardState extends State<SafetyDashboard> {
                   _message('Add a trusted contact before preparing an SOS.');
                   return;
                 }
-                _sendSosTo(_contacts[_selectedContact]);
+                _sendSosToSelectedContacts();
               },
               onCallContact: () {
                 if (_contacts.isEmpty) {
@@ -517,9 +904,14 @@ class _SafetyDashboardState extends State<SafetyDashboard> {
                 }
                 _callContact(_contacts[_selectedContact]);
               },
+              onCallEmergency: _callEmergencyServices,
               onEscalate: _escalate,
               nearbyPlaces: _nearbyPlaces,
               onOpenPlaces: () => setState(() => _selectedTab = 2),
+              activeRide: _activeRide,
+              onAddRide: _addRide,
+              onClearRide: _clearRide,
+              onSendRideAlert: _sendRideAlert,
             ),
             _CircleTab(
               devices: _nearbyDevices,
@@ -586,35 +978,55 @@ class _Overview extends StatelessWidget {
     required this.onMessage,
     required this.sharingLocation,
     required this.onLocationChanged,
+    required this.checkInRemainingSeconds,
+    required this.onStartCheckIn,
+    required this.onCancelCheckIn,
     required this.firebaseReady,
     required this.contacts,
     required this.selectedContact,
+    required this.selectedContacts,
     required this.alertStatus,
     required this.onSelectContact,
+    required this.onToggleContact,
     required this.onAddContact,
     required this.onRemoveContact,
     required this.onSendSos,
     required this.onCallContact,
+    required this.onCallEmergency,
     required this.onEscalate,
     required this.nearbyPlaces,
     required this.onOpenPlaces,
+    required this.activeRide,
+    required this.onAddRide,
+    required this.onClearRide,
+    required this.onSendRideAlert,
   });
 
   final ValueChanged<String> onMessage;
   final bool sharingLocation;
   final ValueChanged<bool> onLocationChanged;
+  final int checkInRemainingSeconds;
+  final VoidCallback onStartCheckIn;
+  final VoidCallback onCancelCheckIn;
   final bool firebaseReady;
   final List<TrustedContact> contacts;
   final int selectedContact;
+  final Set<TrustedContact> selectedContacts;
   final AlertStatus alertStatus;
   final ValueChanged<int> onSelectContact;
+  final ValueChanged<TrustedContact> onToggleContact;
   final VoidCallback onAddContact;
   final ValueChanged<TrustedContact> onRemoveContact;
   final VoidCallback onSendSos;
   final VoidCallback onCallContact;
+  final VoidCallback onCallEmergency;
   final VoidCallback onEscalate;
   final List<NearbyPlace> nearbyPlaces;
   final VoidCallback onOpenPlaces;
+  final RideTrip? activeRide;
+  final VoidCallback onAddRide;
+  final VoidCallback onClearRide;
+  final VoidCallback onSendRideAlert;
 
   @override
   Widget build(BuildContext context) {
@@ -652,6 +1064,7 @@ class _Overview extends StatelessWidget {
             onMessage: onMessage,
             onSendSos: onSendSos,
             onCallContact: onCallContact,
+            onCallEmergency: onCallEmergency,
             onEscalate: onEscalate,
             alertStatus: alertStatus,
             selectedContact:
@@ -670,11 +1083,27 @@ class _Overview extends StatelessWidget {
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: _QuickAction(
-                  icon: Icons.access_time_rounded,
-                  label: 'Start check-in',
-                  color: const Color(0xFFF1E6D4),
-                  onTap: () => onMessage('Check-in started for 30 minutes.'),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: _QuickAction(
+                        icon: Icons.access_time_rounded,
+                        label: checkInRemainingSeconds > 0
+                            ? _formatOverviewDuration(checkInRemainingSeconds)
+                            : 'Start check-in',
+                        color: const Color(0xFFF1E6D4),
+                        onTap: checkInRemainingSeconds > 0
+                            ? () {}
+                            : onStartCheckIn,
+                      ),
+                    ),
+                    if (checkInRemainingSeconds > 0)
+                      IconButton(
+                        onPressed: onCancelCheckIn,
+                        tooltip: 'Cancel check-in',
+                        icon: const Icon(Icons.close_rounded, color: rust),
+                      ),
+                  ],
                 ),
               ),
             ],
@@ -687,6 +1116,13 @@ class _Overview extends StatelessWidget {
               );
             },
           ),
+          const SizedBox(height: 12),
+          _RideSafetyCard(
+            ride: activeRide,
+            onAddRide: onAddRide,
+            onClearRide: onClearRide,
+            onSendAlert: onSendRideAlert,
+          ),
           const SizedBox(height: 27),
           _SectionTitle(
             title: 'Your safety circle',
@@ -694,6 +1130,14 @@ class _Overview extends StatelessWidget {
             onPressed: onAddContact,
           ),
           const SizedBox(height: 12),
+          if (contacts.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Text(
+                '${selectedContacts.length} selected for low-battery location sharing · Tap to toggle',
+                style: const TextStyle(color: muted, fontSize: 11),
+              ),
+            ),
           SizedBox(
             height: 92,
             child: ListView(
@@ -702,13 +1146,16 @@ class _Overview extends StatelessWidget {
                 for (var i = 0; i < contacts.length; i++)
                   _Contact(
                     contact: contacts[i],
-                    selected: i == selectedContact,
+                    selected: selectedContacts.contains(contacts[i]),
                     color: [
                       const Color(0xFFE8C9B4),
                       const Color(0xFFD8D6E8),
                       const Color(0xFFC9DDE1),
                     ][i % 3],
-                    onTap: () => onSelectContact(i),
+                    onTap: () {
+                      onSelectContact(i);
+                      onToggleContact(contacts[i]);
+                    },
                     onRemove: () => onRemoveContact(contacts[i]),
                   ),
                 _AddContact(onTap: onAddContact),
@@ -772,6 +1219,7 @@ class _SafetyCard extends StatelessWidget {
     required this.onMessage,
     required this.onSendSos,
     required this.onCallContact,
+    required this.onCallEmergency,
     required this.onEscalate,
     required this.alertStatus,
     required this.selectedContact,
@@ -780,6 +1228,7 @@ class _SafetyCard extends StatelessWidget {
   final ValueChanged<String> onMessage;
   final VoidCallback onSendSos;
   final VoidCallback onCallContact;
+  final VoidCallback onCallEmergency;
   final VoidCallback onEscalate;
   final AlertStatus alertStatus;
   final TrustedContact? selectedContact;
@@ -837,43 +1286,48 @@ class _SafetyCard extends StatelessWidget {
           ),
           const SizedBox(height: 3),
           const Text(
-            'Press and hold to alert your safety circle.',
+            'Call emergency services directly or inform your inner circle.',
             style: TextStyle(color: muted, fontSize: 12),
           ),
           const SizedBox(height: 18),
           SizedBox(
             width: double.infinity,
-            child: GestureDetector(
-              onLongPress: onSendSos,
-              child: Container(
-                height: 62,
-                decoration: BoxDecoration(
-                  color: rust,
+            child: FilledButton.icon(
+              onPressed: onCallEmergency,
+              icon: const Icon(Icons.phone_in_talk_rounded),
+              label: const Text('CALL EMERGENCY SERVICES (112)'),
+              style: FilledButton.styleFrom(
+                backgroundColor: rust,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 17),
+                shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(18),
-                ),
-                child: const Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.shield_outlined, color: Colors.white, size: 21),
-                    SizedBox(width: 10),
-                    Text(
-                      'PRESS & HOLD FOR SOS',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 1.1,
-                      ),
-                    ),
-                  ],
                 ),
               ),
             ),
           ),
           const SizedBox(height: 13),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: onSendSos,
+              icon: const Icon(Icons.groups_rounded),
+              label: const Text('PRESS TO INFORM INNER CIRCLE'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: ink,
+                side: const BorderSide(color: tan),
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(18),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
           const Center(
             child: Text(
-              'Review the message and press Send in your SMS app',
+              'A single SMS will be prepared for selected contacts. Review and press Send.',
+              textAlign: TextAlign.center,
               style: TextStyle(color: muted, fontSize: 10),
             ),
           ),
@@ -1578,6 +2032,224 @@ class _NearbyPlaceTile extends StatelessWidget {
           onMessage('Directions could not be opened on this device.');
         }
       },
+    );
+  }
+}
+
+class _RideSafetyCard extends StatelessWidget {
+  const _RideSafetyCard({
+    required this.ride,
+    required this.onAddRide,
+    required this.onClearRide,
+    required this.onSendAlert,
+  });
+
+  final RideTrip? ride;
+  final VoidCallback onAddRide;
+  final VoidCallback onClearRide;
+  final VoidCallback onSendAlert;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: card,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFECE9E0)),
+      ),
+      child: ride == null
+          ? InkWell(
+              onTap: onAddRide,
+              child: const Row(
+                children: [
+                  CircleAvatar(
+                    backgroundColor: softBlue,
+                    child: Icon(Icons.local_taxi_outlined, color: ink),
+                  ),
+                  SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Ride safety',
+                            style: TextStyle(
+                                color: ink,
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold)),
+                        SizedBox(height: 3),
+                        Text('Save taxi, cab, or auto details',
+                            style: TextStyle(color: muted, fontSize: 11)),
+                      ],
+                    ),
+                  ),
+                  Icon(Icons.chevron_right_rounded, color: muted),
+                ],
+              ),
+            )
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.local_taxi_outlined, color: tan),
+                    const SizedBox(width: 8),
+                    const Expanded(
+                      child: Text('Ride safety active',
+                          style: TextStyle(
+                              color: ink,
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold)),
+                    ),
+                    IconButton(
+                      onPressed: onClearRide,
+                      tooltip: 'Clear ride',
+                      icon: const Icon(Icons.close_rounded, color: muted),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(ride!.summary,
+                    style: const TextStyle(color: ink, fontSize: 12)),
+                const SizedBox(height: 4),
+                Text('Driver: ${ride!.driverName} · ${ride!.tripInfo}',
+                    style: const TextStyle(color: muted, fontSize: 11)),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: onAddRide,
+                        child: const Text('Edit details'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: FilledButton.icon(
+                        onPressed: onSendAlert,
+                        icon: const Icon(Icons.sms_outlined, size: 17),
+                        label: const Text('Send alert'),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: rust,
+                          foregroundColor: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+    );
+  }
+}
+
+class _RideDialog extends StatefulWidget {
+  const _RideDialog();
+
+  @override
+  State<_RideDialog> createState() => _RideDialogState();
+}
+
+class _RideDialogState extends State<_RideDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _registration = TextEditingController();
+  final _driverName = TextEditingController();
+  final _driverPhone = TextEditingController();
+  final _destination = TextEditingController();
+  final _tripInfo = TextEditingController();
+  String _vehicleType = 'Taxi';
+
+  @override
+  void dispose() {
+    _registration.dispose();
+    _driverName.dispose();
+    _driverPhone.dispose();
+    _destination.dispose();
+    _tripInfo.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Ride safety details'),
+      content: Form(
+        key: _formKey,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              DropdownButtonFormField<String>(
+                initialValue: _vehicleType,
+                decoration: const InputDecoration(labelText: 'Vehicle type'),
+                items: ['Taxi', 'Cab', 'Auto'].map((type) {
+                  return DropdownMenuItem(value: type, child: Text(type));
+                }).toList(),
+                onChanged: (value) =>
+                    setState(() => _vehicleType = value ?? 'Taxi'),
+              ),
+              TextFormField(
+                controller: _registration,
+                decoration: const InputDecoration(
+                    labelText: 'Vehicle registration number'),
+                validator: (value) => value == null || value.trim().isEmpty
+                    ? 'Enter the registration number'
+                    : null,
+              ),
+              TextFormField(
+                controller: _driverName,
+                decoration: const InputDecoration(labelText: 'Driver name'),
+                validator: (value) => value == null || value.trim().isEmpty
+                    ? 'Enter the driver name'
+                    : null,
+              ),
+              TextFormField(
+                controller: _driverPhone,
+                keyboardType: TextInputType.phone,
+                decoration:
+                    const InputDecoration(labelText: 'Driver phone (optional)'),
+              ),
+              TextFormField(
+                controller: _destination,
+                decoration: const InputDecoration(labelText: 'Destination'),
+                validator: (value) => value == null || value.trim().isEmpty
+                    ? 'Enter the destination'
+                    : null,
+              ),
+              TextFormField(
+                controller: _tripInfo,
+                decoration: const InputDecoration(
+                    labelText: 'Trip information (optional)'),
+                maxLines: 2,
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () {
+            if (!_formKey.currentState!.validate()) return;
+            Navigator.pop(
+              context,
+              RideTrip(
+                vehicleType: _vehicleType,
+                registration: _registration.text.trim(),
+                driverName: _driverName.text.trim(),
+                driverPhone: _driverPhone.text.trim(),
+                destination: _destination.text.trim(),
+                tripInfo: _tripInfo.text.trim(),
+              ),
+            );
+          },
+          child: const Text('Save ride'),
+        ),
+      ],
     );
   }
 }

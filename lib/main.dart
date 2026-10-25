@@ -495,8 +495,13 @@ class _SafetyDashboardState extends State<SafetyDashboard> {
   String? _profilePhone;
   Timer? _checkInTimer;
   int _checkInRemainingSeconds = 0;
+  Timer? _recordingCheckInTimer;
+  int _recordingCheckInRemainingSeconds = 0;
   Timer? _fakeCallTimer;
   String? _scheduledFakeCallCaller;
+
+  String get _contactsStorageKey =>
+      'trusted_contacts_${widget.user?.uid ?? 'local'}';
 
   String get _userName {
     final name = widget.user?.displayName?.trim();
@@ -561,6 +566,7 @@ class _SafetyDashboardState extends State<SafetyDashboard> {
     _nearbyPlacesService.dispose();
     _batterySubscription?.cancel();
     _checkInTimer?.cancel();
+    _recordingCheckInTimer?.cancel();
     _fakeCallTimer?.cancel();
     super.dispose();
   }
@@ -798,7 +804,7 @@ class _SafetyDashboardState extends State<SafetyDashboard> {
   }
 
   Future<void> _loadContacts() async {
-    final stored = await _storage.read(key: 'trusted_contacts');
+    final stored = await _storage.read(key: _contactsStorageKey);
     if (!mounted || stored == null || stored.isEmpty) return;
     final loaded = <TrustedContact>[];
     for (final value in stored.split('\n')) {
@@ -915,7 +921,7 @@ Please contact me and check on me if needed.''';
 
   Future<void> _saveContacts() {
     return _storage.write(
-      key: 'trusted_contacts',
+      key: _contactsStorageKey,
       value: _contacts.map((contact) => contact.encoded).join('\n'),
     );
   }
@@ -1099,6 +1105,14 @@ Please contact me and check on me if needed.''';
     );
   }
 
+  void _openVideoRecorderForCheckIn() {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (context) => const _EvidenceRecorderPage(autoStartVideo: true),
+      ),
+    );
+  }
+
   Future<void> _chooseCheckInDuration() async {
     final minutes = await showModalBottomSheet<int>(
       context: context,
@@ -1111,7 +1125,7 @@ Please contact me and check on me if needed.''';
               subtitle:
                   Text('If you do not cancel it, your circle will be alerted.'),
             ),
-            for (final duration in [5, 15, 30, 60])
+            for (final duration in [1, 5, 15, 30, 60])
               ListTile(
                 leading: const Icon(Icons.timer_outlined, color: tan),
                 title: Text(duration == 60 ? '1 hour' : '$duration minutes'),
@@ -1149,6 +1163,59 @@ Please contact me and check on me if needed.''';
     _checkInTimer?.cancel();
     setState(() => _checkInRemainingSeconds = 0);
     _message('Check-in canceled. You marked yourself safe.');
+  }
+
+  Future<void> _chooseRecordingCheckInDuration() async {
+    final minutes = await showModalBottomSheet<int>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const ListTile(
+              title: Text('Start a video recording check-in'),
+              subtitle: Text(
+                  'If you do not cancel it, visible video recording will start.'),
+            ),
+            for (final duration in [1, 5, 15, 30])
+              ListTile(
+                leading: const Icon(Icons.videocam_outlined, color: tan),
+                title: Text('$duration minutes'),
+                onTap: () => Navigator.pop(context, duration),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (minutes == null) return;
+    _startRecordingCheckIn(minutes);
+  }
+
+  void _startRecordingCheckIn(int minutes) {
+    _recordingCheckInTimer?.cancel();
+    setState(() => _recordingCheckInRemainingSeconds = minutes * 60);
+    _recordingCheckInTimer =
+        Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_recordingCheckInRemainingSeconds <= 1) {
+        timer.cancel();
+        if (!mounted) return;
+        setState(() => _recordingCheckInRemainingSeconds = 0);
+        _message('Video check-in expired. Starting visible video recording.');
+        _openVideoRecorderForCheckIn();
+        return;
+      }
+      if (mounted) {
+        setState(() => _recordingCheckInRemainingSeconds--);
+      }
+    });
+    _message(
+        'Video recording check-in started for $minutes minute${minutes == 1 ? '' : 's'}.');
+  }
+
+  void _cancelRecordingCheckIn() {
+    _recordingCheckInTimer?.cancel();
+    setState(() => _recordingCheckInRemainingSeconds = 0);
+    _message('Video recording check-in canceled.');
   }
 
   Future<void> _handleCheckInExpired() async {
@@ -1302,6 +1369,10 @@ Please contact me and check on me if needed.''';
               checkInRemainingSeconds: _checkInRemainingSeconds,
               onStartCheckIn: _chooseCheckInDuration,
               onCancelCheckIn: _cancelCheckIn,
+              recordingCheckInRemainingSeconds:
+                  _recordingCheckInRemainingSeconds,
+              onStartRecordingCheckIn: _chooseRecordingCheckInDuration,
+              onCancelRecordingCheckIn: _cancelRecordingCheckIn,
               firebaseReady: widget.firebaseReady,
               contacts: _contacts,
               selectedContact: _selectedContact,
@@ -1334,6 +1405,7 @@ Please contact me and check on me if needed.''';
               },
               onCallEmergency: _callEmergencyServices,
               onCallMahilaPolice: _callMahilaPolice,
+              onRecordingCheckInExpired: _openVideoRecorderForCheckIn,
               onEscalate: _escalate,
               nearbyPlaces: _nearbyPlaces,
               onOpenPlaces: () => setState(() => _selectedTab = 2),
@@ -1425,6 +1497,9 @@ class _Overview extends StatelessWidget {
     required this.checkInRemainingSeconds,
     required this.onStartCheckIn,
     required this.onCancelCheckIn,
+    required this.recordingCheckInRemainingSeconds,
+    required this.onStartRecordingCheckIn,
+    required this.onCancelRecordingCheckIn,
     required this.firebaseReady,
     required this.contacts,
     required this.selectedContact,
@@ -1438,6 +1513,7 @@ class _Overview extends StatelessWidget {
     required this.onCallContact,
     required this.onCallEmergency,
     required this.onCallMahilaPolice,
+    required this.onRecordingCheckInExpired,
     required this.onEscalate,
     required this.nearbyPlaces,
     required this.onOpenPlaces,
@@ -1459,6 +1535,9 @@ class _Overview extends StatelessWidget {
   final int checkInRemainingSeconds;
   final VoidCallback onStartCheckIn;
   final VoidCallback onCancelCheckIn;
+  final int recordingCheckInRemainingSeconds;
+  final VoidCallback onStartRecordingCheckIn;
+  final VoidCallback onCancelRecordingCheckIn;
   final bool firebaseReady;
   final List<TrustedContact> contacts;
   final int selectedContact;
@@ -1472,6 +1551,7 @@ class _Overview extends StatelessWidget {
   final VoidCallback onCallContact;
   final VoidCallback onCallEmergency;
   final VoidCallback onCallMahilaPolice;
+  final VoidCallback onRecordingCheckInExpired;
   final VoidCallback onEscalate;
   final List<NearbyPlace> nearbyPlaces;
   final VoidCallback onOpenPlaces;
@@ -1501,18 +1581,9 @@ class _Overview extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 7),
-          const Text(
-            'Good evening,',
-            style: TextStyle(
-              color: ink,
-              fontSize: 28,
-              fontWeight: FontWeight.w800,
-              letterSpacing: -1.1,
-            ),
-          ),
           Text(
-            userName,
-            style: const TextStyle(
+            'Hello, $userName',
+            style: TextStyle(
               color: ink,
               fontSize: 28,
               fontWeight: FontWeight.w800,
@@ -1531,6 +1602,7 @@ class _Overview extends StatelessWidget {
             onCallContact: onCallContact,
             onCallEmergency: onCallEmergency,
             onCallMahilaPolice: onCallMahilaPolice,
+            onRecordingCheckInExpired: onRecordingCheckInExpired,
             onEscalate: onEscalate,
             alertStatus: alertStatus,
             selectedContact:
@@ -1583,6 +1655,33 @@ class _Overview extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: recordingCheckInRemainingSeconds > 0
+                  ? onCancelRecordingCheckIn
+                  : onStartRecordingCheckIn,
+              icon: Icon(
+                recordingCheckInRemainingSeconds > 0
+                    ? Icons.stop_circle_outlined
+                    : Icons.videocam_outlined,
+              ),
+              label: Text(
+                recordingCheckInRemainingSeconds > 0
+                    ? 'Video recording starts in ${_formatOverviewDuration(recordingCheckInRemainingSeconds)} · Cancel'
+                    : 'Start video recording check-in',
+              ),
+              style: OutlinedButton.styleFrom(
+                foregroundColor:
+                    recordingCheckInRemainingSeconds > 0 ? rust : ink,
+                side: BorderSide(
+                  color: recordingCheckInRemainingSeconds > 0 ? rust : tan,
+                ),
+                padding: const EdgeInsets.symmetric(vertical: 14),
+              ),
+            ),
+          ),
+          const SizedBox(height: 14),
           _FollowMeBanner(
             onTap: () {
               Navigator.of(context).push(
@@ -1590,6 +1689,7 @@ class _Overview extends StatelessWidget {
                   builder: (context) => FollowPage(
                     userName: userName,
                     userPhone: userPhone,
+                    onRecordingCheckInExpired: onRecordingCheckInExpired,
                   ),
                 ),
               );
@@ -1752,7 +1852,9 @@ class _EvidenceRecorderCard extends StatelessWidget {
 }
 
 class _EvidenceRecorderPage extends StatefulWidget {
-  const _EvidenceRecorderPage();
+  const _EvidenceRecorderPage({this.autoStartVideo = false});
+
+  final bool autoStartVideo;
 
   @override
   State<_EvidenceRecorderPage> createState() => _EvidenceRecorderPageState();
@@ -1781,6 +1883,17 @@ class _EvidenceRecorderPageState extends State<_EvidenceRecorderPage>
     if (recording_storage.isSupported) {
       _refreshSavedRecordings();
     }
+    if (widget.autoStartVideo) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _startVideoRecordingAutomatically();
+      });
+    }
+  }
+
+  Future<void> _startVideoRecordingAutomatically() async {
+    if (!mounted) return;
+    await _setMode(_EvidenceMode.video);
+    if (mounted) await _startRecording();
   }
 
   @override
@@ -2990,6 +3103,7 @@ class _SafetyCard extends StatelessWidget {
     required this.onCallContact,
     required this.onCallEmergency,
     required this.onCallMahilaPolice,
+    required this.onRecordingCheckInExpired,
     required this.onEscalate,
     required this.alertStatus,
     required this.selectedContact,
@@ -3000,6 +3114,7 @@ class _SafetyCard extends StatelessWidget {
   final VoidCallback onCallContact;
   final VoidCallback onCallEmergency;
   final VoidCallback onCallMahilaPolice;
+  final VoidCallback onRecordingCheckInExpired;
   final VoidCallback onEscalate;
   final AlertStatus alertStatus;
   final TrustedContact? selectedContact;
@@ -3068,7 +3183,10 @@ class _SafetyCard extends StatelessWidget {
                 onMessage('Your safety circle has been alerted.');
                 Navigator.of(context).push(
                   MaterialPageRoute(
-                      builder: (context) => const SafetyModePage()),
+                      builder: (context) => SafetyModePage(
+                            onRecordingCheckInExpired:
+                                onRecordingCheckInExpired,
+                          )),
                 );
               },
               child: Container(

@@ -18,10 +18,16 @@ const _safeGreen = Color(0xFF73A58C);
 
 /// Discreet user-triggered safety mode screen with working SOS and community responder network.
 class SafetyModePage extends StatefulWidget {
-  const SafetyModePage({super.key, this.userName, this.userPhone});
+  const SafetyModePage({
+    super.key,
+    this.userName,
+    this.userPhone,
+    this.onRecordingCheckInExpired,
+  });
 
   final String? userName;
   final String? userPhone;
+  final VoidCallback? onRecordingCheckInExpired;
 
   @override
   State<SafetyModePage> createState() => _SafetyModePageState();
@@ -51,6 +57,8 @@ class _SafetyModePageState extends State<SafetyModePage> {
   // Check-in state
   Timer? _checkInTimer;
   int _checkInRemainingSeconds = 0;
+  Timer? _recordingCheckInTimer;
+  int _recordingCheckInRemainingSeconds = 0;
 
   @override
   void initState() {
@@ -102,6 +110,7 @@ class _SafetyModePageState extends State<SafetyModePage> {
   void dispose() {
     _sosTimer?.cancel();
     _checkInTimer?.cancel();
+    _recordingCheckInTimer?.cancel();
     _alertSubscription?.cancel();
     _incomingAlertSubscription?.cancel();
     super.dispose();
@@ -326,6 +335,46 @@ class _SafetyModePageState extends State<SafetyModePage> {
     _showMessage('Check-in canceled. Stay safe!');
   }
 
+  void _startRecordingCheckIn(int minutes) {
+    _recordingCheckInTimer?.cancel();
+    setState(() => _recordingCheckInRemainingSeconds = minutes * 60);
+    _recordingCheckInTimer =
+        Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_recordingCheckInRemainingSeconds <= 1) {
+        timer.cancel();
+        if (mounted) {
+          setState(() => _recordingCheckInRemainingSeconds = 0);
+          _handleRecordingCheckInExpired();
+        }
+        return;
+      }
+      if (mounted) {
+        setState(() => _recordingCheckInRemainingSeconds--);
+      }
+    });
+    _showMessage(
+      'Video recording check-in started for ${minutes == 1 ? '1 minute' : '$minutes minutes'}.',
+    );
+  }
+
+  void _cancelRecordingCheckIn() {
+    _recordingCheckInTimer?.cancel();
+    setState(() => _recordingCheckInRemainingSeconds = 0);
+    _showMessage('Video recording check-in canceled.');
+  }
+
+  void _handleRecordingCheckInExpired() {
+    _statusBanner =
+        'Recording check-in expired. Opening visible video recording.';
+    _showMessage('Recording check-in expired. Starting video recording.');
+    final startRecording = widget.onRecordingCheckInExpired;
+    if (startRecording == null) {
+      _showMessage('Open the recorder manually to start video recording.');
+      return;
+    }
+    startRecording();
+  }
+
   String _formatDuration(int totalSeconds) {
     final minutes = totalSeconds ~/ 60;
     final seconds = totalSeconds % 60;
@@ -465,6 +514,8 @@ class _SafetyModePageState extends State<SafetyModePage> {
 
               // 4. Timed Safety Check-in
               _buildCheckInSection(cardBg, borderColor, fg),
+              const SizedBox(height: 12),
+              _buildRecordingCheckInSection(cardBg, borderColor, fg),
 
               const SizedBox(height: 24),
 
@@ -1051,6 +1102,108 @@ class _SafetyModePageState extends State<SafetyModePage> {
     );
   }
 
+  Widget _buildRecordingCheckInSection(
+      Color cardBg, Color borderColor, Color fg) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: cardBg,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: borderColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const CircleAvatar(
+                radius: 16,
+                backgroundColor: _softBlue,
+                child: Icon(Icons.videocam_outlined, color: _ink, size: 18),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                'Video Recording Check-In',
+                style: TextStyle(
+                  color: fg,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'If you do not cancel this timer, HerWay will open the visible recorder and start video after the timer expires.',
+            style: TextStyle(color: _muted, fontSize: 12),
+          ),
+          const SizedBox(height: 14),
+          if (_recordingCheckInRemainingSeconds > 0)
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: _softBlue.withValues(alpha: 0.55),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Recording starts in',
+                        style: TextStyle(color: _muted, fontSize: 11),
+                      ),
+                      Text(
+                        _formatDuration(_recordingCheckInRemainingSeconds),
+                        style: TextStyle(
+                          color: fg,
+                          fontSize: 26,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ],
+                  ),
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _safeGreen,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    onPressed: _cancelRecordingCheckIn,
+                    child: const Text('Cancel'),
+                  ),
+                ],
+              ),
+            )
+          else
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final minutes in [1, 5, 15, 30])
+                  OutlinedButton(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: fg,
+                      side: BorderSide(color: borderColor),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    onPressed: () => _startRecordingCheckIn(minutes),
+                    child: Text('$minutes min'),
+                  ),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+
   // 4. Check-in Section
   Widget _buildCheckInSection(Color cardBg, Color borderColor, Color fg) {
     return Container(
@@ -1132,6 +1285,20 @@ class _SafetyModePageState extends State<SafetyModePage> {
           ] else ...[
             Row(
               children: [
+                Expanded(
+                  child: OutlinedButton(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: fg,
+                      side: BorderSide(color: borderColor),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    onPressed: () => _startCheckIn(1),
+                    child: const Text('1 min'),
+                  ),
+                ),
+                const SizedBox(width: 8),
                 Expanded(
                   child: OutlinedButton(
                     style: OutlinedButton.styleFrom(

@@ -19,10 +19,16 @@ const _safeGreen = Color(0xFF73A58C);
 
 /// Screen for BLE proximity scanning and follower awareness.
 class FollowPage extends StatefulWidget {
-  const FollowPage({super.key, this.userName, this.userPhone});
+  const FollowPage({
+    super.key,
+    this.userName,
+    this.userPhone,
+    this.onRecordingCheckInExpired,
+  });
 
   final String? userName;
   final String? userPhone;
+  final VoidCallback? onRecordingCheckInExpired;
 
   @override
   State<FollowPage> createState() => _FollowPageState();
@@ -137,6 +143,7 @@ class _FollowPageState extends State<FollowPage> {
         builder: (context) => SafetyModePage(
           userName: widget.userName,
           userPhone: widget.userPhone,
+          onRecordingCheckInExpired: widget.onRecordingCheckInExpired,
         ),
       ),
     );

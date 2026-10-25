@@ -737,6 +737,30 @@ class _SafetyModePageState extends State<SafetyModePage> {
                   ),
                 ),
                 const SizedBox(height: 10),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: _rust,
+                      side: const BorderSide(color: _rust),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
+                    onPressed: () => _communityService.launchPhoneCall('14490'),
+                    icon: const Icon(Icons.support_agent_rounded, size: 20),
+                    label: const Text(
+                      'CALL MAHILA POLICE (14490)',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 13,
+                        letterSpacing: 0.6,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
 
                 // SMS to Primary Contact
                 SizedBox(

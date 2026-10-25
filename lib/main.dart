@@ -1042,6 +1042,15 @@ Please contact me and check on me if needed.''';
     }
   }
 
+  Future<void> _callMahilaPolice() async {
+    final uri = Uri(scheme: 'tel', path: '14490');
+    if (!await canLaunchUrl(uri) ||
+        !await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+      _message(
+          'Mahila Police calling is unavailable on this device. Call 14490 manually.');
+    }
+  }
+
   Future<void> _configureFakeCall() async {
     final config = await showDialog<_FakeCallConfig>(
       context: context,
@@ -1324,6 +1333,7 @@ Please contact me and check on me if needed.''';
                 _callContact(_contacts[_selectedContact]);
               },
               onCallEmergency: _callEmergencyServices,
+              onCallMahilaPolice: _callMahilaPolice,
               onEscalate: _escalate,
               nearbyPlaces: _nearbyPlaces,
               onOpenPlaces: () => setState(() => _selectedTab = 2),
@@ -1427,6 +1437,7 @@ class _Overview extends StatelessWidget {
     required this.onSendSos,
     required this.onCallContact,
     required this.onCallEmergency,
+    required this.onCallMahilaPolice,
     required this.onEscalate,
     required this.nearbyPlaces,
     required this.onOpenPlaces,
@@ -1460,6 +1471,7 @@ class _Overview extends StatelessWidget {
   final VoidCallback onSendSos;
   final VoidCallback onCallContact;
   final VoidCallback onCallEmergency;
+  final VoidCallback onCallMahilaPolice;
   final VoidCallback onEscalate;
   final List<NearbyPlace> nearbyPlaces;
   final VoidCallback onOpenPlaces;
@@ -1518,6 +1530,7 @@ class _Overview extends StatelessWidget {
             onSendSos: onSendSos,
             onCallContact: onCallContact,
             onCallEmergency: onCallEmergency,
+            onCallMahilaPolice: onCallMahilaPolice,
             onEscalate: onEscalate,
             alertStatus: alertStatus,
             selectedContact:
@@ -2976,6 +2989,7 @@ class _SafetyCard extends StatelessWidget {
     required this.onSendSos,
     required this.onCallContact,
     required this.onCallEmergency,
+    required this.onCallMahilaPolice,
     required this.onEscalate,
     required this.alertStatus,
     required this.selectedContact,
@@ -2985,6 +2999,7 @@ class _SafetyCard extends StatelessWidget {
   final VoidCallback onSendSos;
   final VoidCallback onCallContact;
   final VoidCallback onCallEmergency;
+  final VoidCallback onCallMahilaPolice;
   final VoidCallback onEscalate;
   final AlertStatus alertStatus;
   final TrustedContact? selectedContact;
@@ -3062,21 +3077,42 @@ class _SafetyCard extends StatelessWidget {
                   color: rust,
                   borderRadius: BorderRadius.circular(18),
                 ),
-                child: const Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.phone_in_talk_rounded, color: Colors.white),
-                    SizedBox(width: 9),
-                    Text(
-                      'CALL EMERGENCY SERVICES (112)',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 0.4,
+                child: InkWell(
+                  onTap: onCallEmergency,
+                  borderRadius: BorderRadius.circular(18),
+                  child: const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.phone_in_talk_rounded, color: Colors.white),
+                      SizedBox(width: 9),
+                      Text(
+                        'CALL EMERGENCY SERVICES (112)',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 0.4,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 13),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: onCallMahilaPolice,
+              icon: const Icon(Icons.support_agent_rounded),
+              label: const Text('CALL MAHILA POLICE (14490)'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: rust,
+                side: const BorderSide(color: rust),
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(18),
                 ),
               ),
             ),

@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:audioplayers/audioplayers.dart' as ringtone_audio;
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
@@ -17,9 +19,10 @@ import 'package:video_player/video_player.dart';
 
 import 'firebase_options.dart';
 import 'follow.dart';
-import 'models/safety_session.dart';
 import 'safety_mode.dart';
+import 'models/safety_session.dart';
 import 'services/bluetooth_service.dart';
+import 'services/community_safety_service.dart';
 import 'services/nearby_places_service.dart';
 import 'services/recording_storage_stub.dart'
     if (dart.library.io) 'services/recording_storage_io.dart'
@@ -125,15 +128,343 @@ class HerWayApp extends StatelessWidget {
         fontFamily: 'Arial',
         useMaterial3: true,
       ),
-      home: SafetyDashboard(firebaseReady: firebaseReady),
+      home: firebaseReady
+          ? const _AuthGate()
+          : const SafetyDashboard(firebaseReady: false),
     );
   }
 }
 
+class _AuthGate extends StatelessWidget {
+  const _AuthGate();
+
+  @override
+  Widget build(BuildContext context) {
+    if (Firebase.apps.isEmpty) {
+      return const SafetyDashboard(firebaseReady: false);
+    }
+    return StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.authStateChanges(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            backgroundColor: paper,
+            body: Center(child: CircularProgressIndicator(color: tan)),
+          );
+        }
+        if (snapshot.hasError) {
+          return _AuthError(
+            message: snapshot.error.toString(),
+          );
+        }
+        final user = snapshot.data;
+        if (user == null) return const _LoginPage();
+        return SafetyDashboard(firebaseReady: true, user: user);
+      },
+    );
+  }
+}
+
+class _AuthError extends StatelessWidget {
+  const _AuthError({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: paper,
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            'Authentication is unavailable. Please restart HerWay.\n\n$message',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: ink),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LoginPage extends StatefulWidget {
+  const _LoginPage();
+
+  @override
+  State<_LoginPage> createState() => _LoginPageState();
+}
+
+class _LoginPageState extends State<_LoginPage> {
+  final _formKey = GlobalKey<FormState>();
+  final _nameController = TextEditingController();
+  final _emailController = TextEditingController();
+  final _phoneController = TextEditingController();
+  final _passwordController = TextEditingController();
+  bool _isRegistering = false;
+  bool _isLoading = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _emailController.dispose();
+    _phoneController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+    try {
+      final auth = FirebaseAuth.instance;
+      if (_isRegistering) {
+        final phone = _normalizePhone(_phoneController.text);
+        final credential = await auth.createUserWithEmailAndPassword(
+          email: _emailController.text.trim(),
+          password: _passwordController.text,
+        );
+        await credential.user?.updateDisplayName(_nameController.text.trim());
+        const storage = FlutterSecureStorage();
+        await storage.write(
+          key: 'profile_phone_${credential.user!.uid}',
+          value: phone,
+        );
+      } else {
+        await auth.signInWithEmailAndPassword(
+          email: _emailController.text.trim(),
+          password: _passwordController.text,
+        );
+      }
+    } on FirebaseAuthException catch (error) {
+      if (!mounted) return;
+      setState(() => _error = _authErrorMessage(error));
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _error = 'Authentication failed. Please try again.');
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  String _normalizePhone(String value) {
+    final compact = value.replaceAll(RegExp(r'[\s()-]'), '');
+    return compact;
+  }
+
+  String? _validatePhone(String? value) {
+    final normalized = _normalizePhone(value ?? '');
+    if (!RegExp(r'^\+?[0-9]{7,15}$').hasMatch(normalized)) {
+      return 'Enter a valid phone number';
+    }
+    return null;
+  }
+
+  void _toggleAuthMode() {
+    _nameController.clear();
+    _phoneController.clear();
+    setState(() {
+      _isRegistering = !_isRegistering;
+      _error = null;
+    });
+  }
+
+  String _authErrorMessage(FirebaseAuthException error) {
+    switch (error.code) {
+      case 'invalid-credential':
+      case 'user-not-found':
+      case 'wrong-password':
+        return 'Email or password is incorrect.';
+      case 'email-already-in-use':
+        return 'An account already exists for this email.';
+      case 'weak-password':
+        return 'Use a password with at least 6 characters.';
+      case 'invalid-email':
+        return 'Enter a valid email address.';
+      case 'network-request-failed':
+        return 'No network connection. Check your connection and try again.';
+      default:
+        return error.message ?? 'Authentication failed. Please try again.';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: paper,
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 420),
+              child: Card(
+                color: card,
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(24),
+                  side: const BorderSide(color: Color(0xFFECE9E0)),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Form(
+                    key: _formKey,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'HerWay',
+                          style: TextStyle(
+                            color: ink,
+                            fontSize: 30,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          _isRegistering
+                              ? 'Create your safety account'
+                              : 'Sign in to your safety account',
+                          style: const TextStyle(color: muted, fontSize: 14),
+                        ),
+                        const SizedBox(height: 24),
+                        if (_isRegistering) ...[
+                          TextFormField(
+                            controller: _nameController,
+                            keyboardType: TextInputType.name,
+                            textCapitalization: TextCapitalization.words,
+                            autocorrect: true,
+                            enableSuggestions: true,
+                            autofillHints: const [AutofillHints.name],
+                            decoration: const InputDecoration(
+                              labelText: 'Full name',
+                              prefixIcon: Icon(Icons.person_outline_rounded),
+                            ),
+                            validator: (value) =>
+                                value == null || value.trim().length < 2
+                                    ? 'Enter your name'
+                                    : null,
+                          ),
+                          const SizedBox(height: 12),
+                          TextFormField(
+                            controller: _phoneController,
+                            keyboardType: TextInputType.phone,
+                            autocorrect: false,
+                            enableSuggestions: false,
+                            autofillHints: const <String>[],
+                            decoration: const InputDecoration(
+                              labelText: 'Phone number',
+                              hintText: 'Enter your phone number',
+                              prefixIcon: Icon(Icons.phone_outlined),
+                            ),
+                            validator: _validatePhone,
+                          ),
+                          const SizedBox(height: 12),
+                        ],
+                        TextFormField(
+                          controller: _emailController,
+                          keyboardType: TextInputType.emailAddress,
+                          autocorrect: false,
+                          decoration: const InputDecoration(
+                            labelText: 'Email',
+                            prefixIcon: Icon(Icons.email_outlined),
+                          ),
+                          validator: (value) {
+                            if (value == null ||
+                                !RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+                                    .hasMatch(value.trim())) {
+                              return 'Enter a valid email address';
+                            }
+                            return null;
+                          },
+                        ),
+                        const SizedBox(height: 12),
+                        TextFormField(
+                          controller: _passwordController,
+                          obscureText: true,
+                          decoration: const InputDecoration(
+                            labelText: 'Password',
+                            prefixIcon: Icon(Icons.lock_outline_rounded),
+                          ),
+                          validator: (value) =>
+                              value == null || value.length < 6
+                                  ? 'Use at least 6 characters'
+                                  : null,
+                        ),
+                        if (_error != null) ...[
+                          const SizedBox(height: 14),
+                          Text(_error!,
+                              style:
+                                  const TextStyle(color: rust, fontSize: 12)),
+                        ],
+                        const SizedBox(height: 22),
+                        SizedBox(
+                          width: double.infinity,
+                          child: FilledButton(
+                            onPressed: _isLoading ? null : _submit,
+                            style: FilledButton.styleFrom(
+                              backgroundColor: tan,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 15),
+                            ),
+                            child: _isLoading
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2),
+                                  )
+                                : Text(_isRegistering
+                                    ? 'Create account'
+                                    : 'Log in'),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: _isLoading ? null : _toggleAuthMode,
+                          child: Text(_isRegistering
+                              ? 'Already have an account? Log in'
+                              : 'New to HerWay? Create an account'),
+                        ),
+                        Center(
+                          child: TextButton.icon(
+                            onPressed: _isLoading ? null : _openSurvey,
+                            icon:
+                                const Icon(Icons.assignment_outlined, size: 17),
+                            label: const Text('Complete the safety survey'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openSurvey() async {
+    final uri = Uri.parse(
+      'https://docs.google.com/forms/d/e/1FAIpQLSdCsuI0nDTv0THAh-t__S5a1ypudsve8EegvHV9qe1jEw4Bcg/viewform?usp=sharing&ouid=117483371930256036492',
+    );
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication) &&
+        mounted) {
+      setState(() => _error = 'The safety survey could not be opened.');
+    }
+  }
+}
+
 class SafetyDashboard extends StatefulWidget {
-  const SafetyDashboard({super.key, required this.firebaseReady});
+  const SafetyDashboard({super.key, required this.firebaseReady, this.user});
 
   final bool firebaseReady;
+  final User? user;
 
   @override
   State<SafetyDashboard> createState() => _SafetyDashboardState();
@@ -161,16 +492,39 @@ class _SafetyDashboardState extends State<SafetyDashboard> {
   StreamSubscription<BatteryState>? _batterySubscription;
   bool _lowBatteryWarningShown = false;
   RideTrip? _activeRide;
+  String? _profilePhone;
   Timer? _checkInTimer;
   int _checkInRemainingSeconds = 0;
   Timer? _fakeCallTimer;
   String? _scheduledFakeCallCaller;
 
+  String get _userName {
+    final name = widget.user?.displayName?.trim();
+    return name == null || name.isEmpty ? 'there' : name;
+  }
+
+  String get _userInitials {
+    final words = _userName
+        .split(RegExp(r'\s+'))
+        .where((word) => word.isNotEmpty)
+        .toList();
+    if (words.isEmpty) return 'HW';
+    if (words.length == 1) {
+      final word = words.first;
+      return word.substring(0, word.length >= 2 ? 2 : 1).toUpperCase();
+    }
+    return '${words.first[0]}${words.last[0]}'.toUpperCase();
+  }
+
   @override
   void initState() {
     super.initState();
+    if (Firebase.apps.isNotEmpty) {
+      unawaited(CommunitySafetyService.instance.init());
+    }
     _loadContacts();
     _loadRide();
+    _loadProfile();
     _startBatteryMonitoring();
     if (!_supportsBluetooth) return;
     _nearbySubscription = _bluetooth.observationsStream.listen((devices) {
@@ -474,6 +828,13 @@ class _SafetyDashboardState extends State<SafetyDashboard> {
     }
   }
 
+  Future<void> _loadProfile() async {
+    final user = widget.user;
+    if (user == null) return;
+    final phone = await _storage.read(key: 'profile_phone_${user.uid}');
+    if (mounted) setState(() => _profilePhone = phone);
+  }
+
   Future<void> _saveRide(RideTrip ride) async {
     await _storage.write(key: 'active_ride', value: jsonEncode(ride.toJson()));
     if (mounted) setState(() => _activeRide = ride);
@@ -599,7 +960,7 @@ Please contact me and check on me if needed.''';
     final location = position == null
         ? ''
         : '\nLocation: https://www.openstreetmap.org/?mlat=${position.latitude}&mlon=${position.longitude}#map=18/${position.latitude}/${position.longitude}';
-    return 'HerWay safety alert from Alex. I need help. Alert prepared at $time.$location';
+    return 'HerWay safety alert from $_userName. I need help. Alert prepared at $time.$location';
   }
 
   Future<bool> _confirmComposer(String contactName) async {
@@ -878,6 +1239,11 @@ Please contact me and check on me if needed.''';
     await _sendSosTo(_contacts[next]);
   }
 
+  Future<void> _logout() async {
+    if (!widget.firebaseReady || Firebase.apps.isEmpty) return;
+    await FirebaseAuth.instance.signOut();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -885,10 +1251,6 @@ Please contact me and check on me if needed.''';
         backgroundColor: paper,
         elevation: 0,
         scrolledUnderElevation: 0,
-        leading: IconButton(
-          onPressed: () {},
-          icon: const Icon(Icons.menu_rounded, color: ink),
-        ),
         title: const Text(
           'HerWay',
           style: TextStyle(
@@ -899,18 +1261,14 @@ Please contact me and check on me if needed.''';
           ),
         ),
         actions: [
-          IconButton(
-            onPressed: () => _message('You have no new notifications.'),
-            icon: const Icon(Icons.notifications_none_rounded, color: ink),
-          ),
-          const Padding(
-            padding: EdgeInsets.only(right: 16),
+          Padding(
+            padding: const EdgeInsets.only(right: 16),
             child: CircleAvatar(
               radius: 17,
               backgroundColor: sand,
               child: Text(
-                'AM',
-                style: TextStyle(
+                _userInitials,
+                style: const TextStyle(
                   color: ink,
                   fontSize: 10,
                   fontWeight: FontWeight.bold,
@@ -926,6 +1284,8 @@ Please contact me and check on me if needed.''';
           index: _selectedTab,
           children: [
             _Overview(
+              userName: _userName,
+              userPhone: _profilePhone,
               onMessage: _message,
               sharingLocation: _sharingLocation,
               onLocationChanged: (value) =>
@@ -991,6 +1351,8 @@ Please contact me and check on me if needed.''';
               onMessage: _message,
             ),
             _ProfileTab(
+              user: widget.user,
+              phone: _profilePhone,
               contacts: _contacts,
               selectedContacts: _selectedContacts,
               places: _nearbyPlaces,
@@ -1000,6 +1362,7 @@ Please contact me and check on me if needed.''';
               onAddContact: _addContact,
               onRemoveContact: _removeContact,
               onMessage: _message,
+              onLogout: _logout,
             ),
           ],
         ),
@@ -1044,6 +1407,8 @@ Please contact me and check on me if needed.''';
 
 class _Overview extends StatelessWidget {
   const _Overview({
+    required this.userName,
+    required this.userPhone,
     required this.onMessage,
     required this.sharingLocation,
     required this.onLocationChanged,
@@ -1075,6 +1440,8 @@ class _Overview extends StatelessWidget {
     required this.onOpenRecorder,
   });
 
+  final String userName;
+  final String? userPhone;
   final ValueChanged<String> onMessage;
   final bool sharingLocation;
   final ValueChanged<bool> onLocationChanged;
@@ -1123,8 +1490,17 @@ class _Overview extends StatelessWidget {
           ),
           const SizedBox(height: 7),
           const Text(
-            'Good evening, Alex',
+            'Good evening,',
             style: TextStyle(
+              color: ink,
+              fontSize: 28,
+              fontWeight: FontWeight.w800,
+              letterSpacing: -1.1,
+            ),
+          ),
+          Text(
+            userName,
+            style: const TextStyle(
               color: ink,
               fontSize: 28,
               fontWeight: FontWeight.w800,
@@ -1197,7 +1573,12 @@ class _Overview extends StatelessWidget {
           _FollowMeBanner(
             onTap: () {
               Navigator.of(context).push(
-                MaterialPageRoute(builder: (context) => const FollowPage()),
+                MaterialPageRoute(
+                  builder: (context) => FollowPage(
+                    userName: userName,
+                    userPhone: userPhone,
+                  ),
+                ),
               );
             },
           ),
@@ -2297,9 +2678,9 @@ class _FakeCallScreen extends StatefulWidget {
 }
 
 class _FakeCallScreenState extends State<_FakeCallScreen> {
+  final _ringtonePlayer = ringtone_audio.AudioPlayer();
   Timer? _durationTimer;
   Timer? _ringTimer;
-  Timer? _ringPulseTimer;
   int _elapsedSeconds = 0;
   bool _answered = false;
   bool _muted = false;
@@ -2309,6 +2690,7 @@ class _FakeCallScreenState extends State<_FakeCallScreen> {
   @override
   void initState() {
     super.initState();
+    unawaited(_configureRingtonePlayer());
     _playRingtonePulse();
     _ringTimer = Timer.periodic(
       const Duration(seconds: 2),
@@ -2320,13 +2702,13 @@ class _FakeCallScreenState extends State<_FakeCallScreen> {
   void dispose() {
     _durationTimer?.cancel();
     _ringTimer?.cancel();
-    _ringPulseTimer?.cancel();
+    unawaited(_ringtonePlayer.dispose());
     super.dispose();
   }
 
   void _answer() {
     _ringTimer?.cancel();
-    _ringPulseTimer?.cancel();
+    unawaited(_ringtonePlayer.stop());
     setState(() => _answered = true);
     _durationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() => _elapsedSeconds++);
@@ -2336,26 +2718,47 @@ class _FakeCallScreenState extends State<_FakeCallScreen> {
   void _playRingtonePulse() {
     if (_answered || _ringSoundUnavailable) return;
     unawaited(_playAlertSound());
-    _ringPulseTimer?.cancel();
-    _ringPulseTimer = Timer(const Duration(milliseconds: 450), () {
-      if (!_answered && mounted) unawaited(_playAlertSound());
-    });
+  }
+
+  Future<void> _configureRingtonePlayer() async {
+    try {
+      await _ringtonePlayer.setAudioContext(
+        ringtone_audio.AudioContext(
+          iOS: ringtone_audio.AudioContextIOS(
+            category: ringtone_audio.AVAudioSessionCategory.playback,
+            options: const <ringtone_audio.AVAudioSessionOptions>{},
+          ),
+        ),
+      );
+    } catch (error) {
+      debugPrint('Simulated call ringtone setup failed: $error');
+      _handleRingtoneUnavailable();
+    }
   }
 
   Future<void> _playAlertSound() async {
     try {
+      await _ringtonePlayer.play(
+        ringtone_audio.AssetSource('audio/simulated_call_ringtone.wav'),
+        volume: 1,
+      );
+    } catch (error) {
+      debugPrint('Simulated call ringtone playback failed: $error');
+      _handleRingtoneUnavailable();
+    }
+
+    // Keep the native cue as a fallback for platforms that do not load assets.
+    try {
       await SystemSound.play(SystemSoundType.alert);
     } on MissingPluginException {
-      _handleRingtoneUnavailable();
+      // The bundled ringtone above is the primary sound.
     } on PlatformException catch (error) {
       debugPrint('Simulated call ringtone failed: ${error.message}');
-      _handleRingtoneUnavailable();
     }
   }
 
   void _handleRingtoneUnavailable() {
     _ringTimer?.cancel();
-    _ringPulseTimer?.cancel();
     if (mounted) setState(() => _ringSoundUnavailable = true);
   }
 
@@ -2653,7 +3056,6 @@ class _SafetyCard extends StatelessWidget {
                       builder: (context) => const SafetyModePage()),
                 );
               },
-              onTap: onCallEmergency,
               child: Container(
                 height: 62,
                 decoration: BoxDecoration(
@@ -3750,6 +4152,8 @@ class _PlacesTab extends StatelessWidget {
 
 class _ProfileTab extends StatelessWidget {
   const _ProfileTab({
+    required this.user,
+    required this.phone,
     required this.contacts,
     required this.selectedContacts,
     required this.places,
@@ -3759,8 +4163,11 @@ class _ProfileTab extends StatelessWidget {
     required this.onAddContact,
     required this.onRemoveContact,
     required this.onMessage,
+    required this.onLogout,
   });
 
+  final User? user;
+  final String? phone;
   final List<TrustedContact> contacts;
   final Set<TrustedContact> selectedContacts;
   final List<NearbyPlace> places;
@@ -3770,6 +4177,7 @@ class _ProfileTab extends StatelessWidget {
   final VoidCallback onAddContact;
   final ValueChanged<TrustedContact> onRemoveContact;
   final ValueChanged<String> onMessage;
+  final VoidCallback onLogout;
 
   @override
   Widget build(BuildContext context) {
@@ -3822,9 +4230,11 @@ class _ProfileTab extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'Alex',
-                      style: TextStyle(
+                    Text(
+                      user?.displayName?.trim().isNotEmpty == true
+                          ? user!.displayName!.trim()
+                          : 'Signed in',
+                      style: const TextStyle(
                         color: ink,
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
@@ -3956,6 +4366,17 @@ class _ProfileTab extends StatelessWidget {
               style: TextStyle(color: muted, fontSize: 11, height: 1.4),
             ),
           ),
+        const SizedBox(height: 24),
+        OutlinedButton.icon(
+          onPressed: onLogout,
+          icon: const Icon(Icons.logout_rounded),
+          label: const Text('Log out'),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: rust,
+            side: const BorderSide(color: rust),
+            padding: const EdgeInsets.symmetric(vertical: 14),
+          ),
+        ),
       ],
     );
   }
@@ -3976,12 +4397,15 @@ class _ProfileSectionTitle extends StatelessWidget {
           title,
           style: const TextStyle(
             color: ink,
-            fontSize: 17,
+            fontSize: 15,
             fontWeight: FontWeight.bold,
           ),
         ),
         const SizedBox(height: 3),
-        Text(subtitle, style: const TextStyle(color: muted, fontSize: 11)),
+        Text(
+          subtitle,
+          style: const TextStyle(color: muted, fontSize: 11),
+        ),
       ],
     );
   }
@@ -4005,32 +4429,35 @@ class _ProfileEmptyCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: card,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: const Color(0xFFECE9E0)),
       ),
-      child: Row(
+      child: Column(
         children: [
-          if (loading)
-            const SizedBox(
-              width: 22,
-              height: 22,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          else
-            Icon(icon, color: tan),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              message,
-              style: const TextStyle(color: muted, fontSize: 12, height: 1.4),
-            ),
+          Icon(icon, color: muted),
+          const SizedBox(height: 8),
+          Text(
+            message,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: muted, fontSize: 12),
           ),
-          if (actionLabel != null)
-            TextButton(onPressed: onAction, child: Text(actionLabel!)),
+          if (loading) ...[
+            const SizedBox(height: 10),
+            const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          ] else if (actionLabel != null && onAction != null) ...[
+            const SizedBox(height: 10),
+            TextButton(
+              onPressed: onAction,
+              child: Text(actionLabel!),
+            ),
+          ],
         ],
       ),
     );

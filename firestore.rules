@@ -1,0 +1,51 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /distress_alerts/{alertId} {
+      allow create: if request.auth != null
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.status == 'broadcasting';
+
+      allow get, list: if request.auth != null
+        && (
+          resource.data.status == 'broadcasting'
+          || resource.data.ownerUid == request.auth.uid
+          || resource.data.acceptedByUid == request.auth.uid
+        );
+
+      allow update: if request.auth != null
+        && (
+          resource.data.ownerUid == request.auth.uid
+          || (
+            resource.data.status == 'broadcasting'
+            && request.resource.data.status == 'helperAccepted'
+            && request.resource.data.acceptedByUid == request.auth.uid
+          )
+        );
+
+      allow delete: if request.auth != null
+        && resource.data.ownerUid == request.auth.uid;
+
+      match /private/{documentId} {
+        allow create: if request.auth != null
+          && documentId == 'contact'
+          && get(/databases/$(database)/documents/distress_alerts/$(alertId)).data.ownerUid == request.auth.uid;
+
+        allow get: if request.auth != null
+          && get(/databases/$(database)/documents/distress_alerts/$(alertId)).data.acceptedByUid == request.auth.uid;
+
+        allow update, delete: if request.auth != null
+          && get(/databases/$(database)/documents/distress_alerts/$(alertId)).data.ownerUid == request.auth.uid;
+      }
+    }
+
+    match /users/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow create, update: if request.auth != null
+        && request.auth.uid == userId;
+      allow delete: if request.auth != null && request.auth.uid == userId;
+    }
+
+  }
+}

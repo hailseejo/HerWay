@@ -19,7 +19,10 @@ const _safeGreen = Color(0xFF73A58C);
 
 /// Screen for BLE proximity scanning and follower awareness.
 class FollowPage extends StatefulWidget {
-  const FollowPage({super.key});
+  const FollowPage({super.key, this.userName, this.userPhone});
+
+  final String? userName;
+  final String? userPhone;
 
   @override
   State<FollowPage> createState() => _FollowPageState();
@@ -130,7 +133,12 @@ class _FollowPageState extends State<FollowPage> {
 
   void _navigateToSafetyMode() {
     Navigator.of(context).push(
-      MaterialPageRoute(builder: (context) => const SafetyModePage()),
+      MaterialPageRoute(
+        builder: (context) => SafetyModePage(
+          userName: widget.userName,
+          userPhone: widget.userPhone,
+        ),
+      ),
     );
   }
 
@@ -234,7 +242,8 @@ class _FollowPageState extends State<FollowPage> {
                         decoration: BoxDecoration(
                           color: _rust.withValues(alpha: 0.12),
                           borderRadius: BorderRadius.circular(14),
-                          border: Border.all(color: _rust.withValues(alpha: 0.4)),
+                          border:
+                              Border.all(color: _rust.withValues(alpha: 0.4)),
                         ),
                         child: Row(
                           children: [
@@ -463,7 +472,8 @@ class _FollowPageState extends State<FollowPage> {
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             ),
             onPressed: _navigateToSafetyMode,
-            child: const Text('Ask Help', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+            child: const Text('Ask Help',
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
           ),
         ],
       ),
@@ -482,7 +492,8 @@ class _FollowPageState extends State<FollowPage> {
         ),
         child: Column(
           children: [
-            const Icon(Icons.bluetooth_disabled_rounded, size: 40, color: _muted),
+            const Icon(Icons.bluetooth_disabled_rounded,
+                size: 40, color: _muted),
             const SizedBox(height: 12),
             const Text(
               'Bluetooth is Switched Off',
@@ -564,7 +575,8 @@ class _FollowPageState extends State<FollowPage> {
     }
 
     return Column(
-      children: _observations.map((item) => _buildObservationTile(item)).toList(),
+      children:
+          _observations.map((item) => _buildObservationTile(item)).toList(),
     );
   }
 
@@ -585,8 +597,7 @@ class _FollowPageState extends State<FollowPage> {
               const CircleAvatar(
                 radius: 18,
                 backgroundColor: _softBlue,
-                child: Icon(Icons.devices_other_rounded,
-                    color: _ink, size: 18),
+                child: Icon(Icons.devices_other_rounded, color: _ink, size: 18),
               ),
               const SizedBox(width: 12),
               Expanded(

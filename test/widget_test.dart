@@ -8,7 +8,7 @@ void main() {
   testWidgets('renders the safety dashboard', (WidgetTester tester) async {
     await tester.pumpWidget(const HerWayApp(firebaseReady: true));
 
-    expect(find.text('Good evening, Alex'), findsOneWidget);
+    expect(find.text('Good evening,'), findsOneWidget);
     expect(find.text('CALL EMERGENCY SERVICES (112)'), findsOneWidget);
     expect(find.text('PRESS TO INFORM INNER CIRCLE'), findsOneWidget);
     expect(find.text('Your safety circle'), findsOneWidget);
@@ -47,7 +47,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('Your safety details'), findsOneWidget);
-    expect(find.text('Alex'), findsOneWidget);
+    expect(find.text('Signed in'), findsOneWidget);
     expect(find.text('Trusted contacts'), findsOneWidget);
     expect(find.text('No trusted contacts yet. Add someone you trust.'),
         findsOneWidget);
@@ -96,6 +96,7 @@ void main() {
 
     await tester.tap(find.byIcon(Icons.call_end_rounded));
     await tester.pumpAndSettle();
-    expect(find.text('Good evening, Alex'), findsOneWidget);
+    expect(find.text('Good evening,'), findsOneWidget);
+    expect(find.text('there'), findsOneWidget);
   });
 }

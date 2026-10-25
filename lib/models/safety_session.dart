@@ -115,3 +115,81 @@ class SafetyCheckInState {
   }
 }
 
+/// Status of a community distress alert.
+enum DistressStatus {
+  idle,
+  broadcasting,
+  helperAccepted,
+  resolved,
+  canceled,
+}
+
+/// Information about a nearby responder who accepted to help.
+@immutable
+class NearbyHelper {
+  const NearbyHelper({
+    required this.name,
+    required this.distance,
+    required this.acceptedAt,
+    this.phone,
+  });
+
+  final String name;
+  final String distance;
+  final DateTime acceptedAt;
+  final String? phone;
+}
+
+/// Active distress alert broadcast to nearby community members.
+@immutable
+class CommunityDistressAlert {
+  const CommunityDistressAlert({
+    required this.id,
+    required this.userName,
+    required this.userPhone,
+    required this.threatDescription,
+    required this.timestamp,
+    required this.status,
+    this.latitude,
+    this.longitude,
+    this.acceptedBy,
+  });
+
+  final String id;
+  final String userName;
+  final String userPhone;
+  final String threatDescription;
+  final DateTime timestamp;
+  final DistressStatus status;
+  final double? latitude;
+  final double? longitude;
+  final NearbyHelper? acceptedBy;
+
+  bool get isBroadcasting => status == DistressStatus.broadcasting;
+  bool get isAccepted => status == DistressStatus.helperAccepted;
+
+  CommunityDistressAlert copyWith({
+    String? id,
+    String? userName,
+    String? userPhone,
+    String? threatDescription,
+    DateTime? timestamp,
+    DistressStatus? status,
+    double? latitude,
+    double? longitude,
+    NearbyHelper? acceptedBy,
+  }) {
+    return CommunityDistressAlert(
+      id: id ?? this.id,
+      userName: userName ?? this.userName,
+      userPhone: userPhone ?? this.userPhone,
+      threatDescription: threatDescription ?? this.threatDescription,
+      timestamp: timestamp ?? this.timestamp,
+      status: status ?? this.status,
+      latitude: latitude ?? this.latitude,
+      longitude: longitude ?? this.longitude,
+      acceptedBy: acceptedBy ?? this.acceptedBy,
+    );
+  }
+}
+

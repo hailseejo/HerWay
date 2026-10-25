@@ -12,10 +12,8 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/services.dart';
 
 import 'firebase_options.dart';
-import 'models/safety_session.dart';
-import 'services/bluetooth_service.dart';
-import 'services/nearby_places_service.dart';
 import 'follow.dart';
+import 'safety_mode.dart';
 
 const ink = Color(0xFF263448);
 const muted = Color(0xFF7D8285);
@@ -1292,15 +1290,17 @@ class _SafetyCard extends StatelessWidget {
           const SizedBox(height: 18),
           SizedBox(
             width: double.infinity,
-            child: FilledButton.icon(
-              onPressed: onCallEmergency,
-              icon: const Icon(Icons.phone_in_talk_rounded),
-              label: const Text('CALL EMERGENCY SERVICES (112)'),
-              style: FilledButton.styleFrom(
-                backgroundColor: rust,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 17),
-                shape: RoundedRectangleBorder(
+            child: GestureDetector(
+              onLongPress: () {
+                onMessage('Your safety circle has been alerted.');
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (context) => const SafetyModePage()),
+                );
+              },
+              child: Container(
+                height: 62,
+                decoration: BoxDecoration(
+                  color: rust,
                   borderRadius: BorderRadius.circular(18),
                 ),
               ),

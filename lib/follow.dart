@@ -220,6 +220,11 @@ class _FollowPageState extends State<FollowPage> {
                     // Adapter State & Scanning Controls Card
                     _buildScannerControlCard(),
 
+                    const SizedBox(height: 18),
+
+                    // Nearby Community Help Card
+                    _buildNearbyCommunityBanner(),
+
                     const SizedBox(height: 20),
 
                     // Error Message Banner if any
@@ -397,6 +402,68 @@ class _FollowPageState extends State<FollowPage> {
                 ),
               ),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNearbyCommunityBanner() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: _card,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFECE9E0)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x0A263448),
+            blurRadius: 10,
+            offset: Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          const CircleAvatar(
+            radius: 20,
+            backgroundColor: _sand,
+            child: Icon(Icons.groups_rounded, color: _ink, size: 20),
+          ),
+          const SizedBox(width: 14),
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Ask Nearby People for Help',
+                  style: TextStyle(
+                    color: _ink,
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                SizedBox(height: 2),
+                Text(
+                  'Alert nearby HerWay users. When they accept, they get your phone number to call you.',
+                  style: TextStyle(color: _muted, fontSize: 11),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _ink,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            ),
+            onPressed: _navigateToSafetyMode,
+            child: const Text('Ask Help', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
           ),
         ],
       ),
@@ -619,7 +686,7 @@ class _FollowPageState extends State<FollowPage> {
           onPressed: _navigateToSafetyMode,
           icon: const Icon(Icons.shield_rounded, size: 20),
           label: const Text(
-            'I FEEL UNSAFE — ACTIVATE SAFETY MODE',
+            'I FEEL UNSAFE — ACTIVATE SOS & ALERT HELPERS',
             style: TextStyle(
               fontWeight: FontWeight.w800,
               fontSize: 12,

@@ -1,4 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<<<<<<< HEAD
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
@@ -14,6 +15,36 @@
     <uses-permission
         android:name="android.permission.BLUETOOTH_ADMIN"
         android:maxSdkVersion="30" />
+=======
+<uses-feature
+    android:name="android.hardware.bluetooth_le"
+    android:required="false" />
+
+<!-- Android 12 and newer -->
+<uses-permission
+    android:name="android.permission.BLUETOOTH_SCAN"
+    android:usesPermissionFlags="neverForLocation" />
+
+<uses-permission
+    android:name="android.permission.BLUETOOTH_CONNECT" />
+
+<!-- Android 11 and older -->
+<uses-permission
+    android:name="android.permission.BLUETOOTH"
+    android:maxSdkVersion="30" />
+
+<uses-permission
+    android:name="android.permission.BLUETOOTH_ADMIN"
+    android:maxSdkVersion="30" />
+
+<uses-permission
+    android:name="android.permission.ACCESS_FINE_LOCATION"
+    android:maxSdkVersion="30" />
+
+<uses-permission
+    android:name="android.permission.ACCESS_COARSE_LOCATION"
+    android:maxSdkVersion="30" />
+>>>>>>> dd019ec (added nearby contact)
     <application
         android:label="herway"
         android:name="${applicationName}"

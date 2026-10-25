@@ -9,9 +9,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart' hide BluetoothService;
 import 'package:geolocator/geolocator.dart';
+import 'package:just_audio/just_audio.dart';
 import 'package:record/record.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/services.dart';
+import 'package:video_player/video_player.dart';
 
 import 'firebase_options.dart';
 import 'follow.dart';
@@ -1637,6 +1639,35 @@ class _EvidenceRecorderPageState extends State<_EvidenceRecorderPage>
     }
   }
 
+  Future<void> _openSavedRecording(String filename) async {
+    if (_isRecording || _isBusy) return;
+    try {
+      final path = await recording_storage.recordingFilePath(filename);
+      if (filename.endsWith('.mp4')) {
+        await _releaseCamera();
+      }
+      if (!mounted) return;
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (context) => _RecordingPlaybackPage(
+            filename: filename,
+            path: path,
+          ),
+        ),
+      );
+      if (mounted &&
+          _isAppActive &&
+          _mode == _EvidenceMode.video &&
+          recording_storage.isSupported) {
+        await _initializeCamera();
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() => _error = 'Recording could not be opened: $error');
+      }
+    }
+  }
+
   String get _elapsedLabel {
     final minutes = (_elapsedSeconds ~/ 60).toString().padLeft(2, '0');
     final seconds = (_elapsedSeconds % 60).toString().padLeft(2, '0');
@@ -1782,6 +1813,11 @@ class _EvidenceRecorderPageState extends State<_EvidenceRecorderPage>
               ),
             ),
             const SizedBox(height: 8),
+            const Text(
+              'Tap a saved recording to play it.',
+              style: TextStyle(color: muted, fontSize: 11),
+            ),
+            const SizedBox(height: 4),
             if (_savedRecordings.isEmpty)
               const Text(
                 'No recordings yet.',
@@ -1791,6 +1827,7 @@ class _EvidenceRecorderPageState extends State<_EvidenceRecorderPage>
               for (final filename in _savedRecordings.take(8))
                 ListTile(
                   contentPadding: EdgeInsets.zero,
+                  enabled: !_isRecording && !_isBusy,
                   leading: Icon(
                     filename.endsWith('.mp4')
                         ? Icons.videocam_outlined
@@ -1801,8 +1838,288 @@ class _EvidenceRecorderPageState extends State<_EvidenceRecorderPage>
                     filename,
                     style: const TextStyle(color: ink, fontSize: 12),
                   ),
+                  subtitle: Text(
+                    filename.endsWith('.mp4')
+                        ? 'Video recording'
+                        : 'Audio recording',
+                    style: const TextStyle(color: muted, fontSize: 11),
+                  ),
+                  trailing: const Icon(
+                    Icons.play_circle_outline_rounded,
+                    color: tan,
+                  ),
+                  onTap: _isRecording || _isBusy
+                      ? null
+                      : () => _openSavedRecording(filename),
                 ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RecordingPlaybackPage extends StatefulWidget {
+  const _RecordingPlaybackPage({
+    required this.filename,
+    required this.path,
+  });
+
+  final String filename;
+  final String path;
+
+  bool get isVideo => filename.endsWith('.mp4');
+
+  @override
+  State<_RecordingPlaybackPage> createState() => _RecordingPlaybackPageState();
+}
+
+class _RecordingPlaybackPageState extends State<_RecordingPlaybackPage> {
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  VideoPlayerController? _videoController;
+  StreamSubscription<Duration>? _audioPositionSubscription;
+  StreamSubscription<Duration?>? _audioDurationSubscription;
+  StreamSubscription<PlayerState>? _audioStateSubscription;
+  Duration _audioPosition = Duration.zero;
+  Duration _audioDuration = Duration.zero;
+  bool _isLoading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _initializePlayback();
+  }
+
+  Future<void> _initializePlayback() async {
+    try {
+      if (widget.isVideo) {
+        final controller = recording_storage.videoPlayerForFile(widget.path);
+        _videoController = controller;
+        await controller.initialize();
+        controller.addListener(_handleVideoUpdate);
+      } else {
+        _audioPositionSubscription = _audioPlayer.positionStream.listen(
+          (position) {
+            if (mounted) setState(() => _audioPosition = position);
+          },
+        );
+        _audioDurationSubscription = _audioPlayer.durationStream.listen(
+          (duration) {
+            if (mounted) {
+              setState(() => _audioDuration = duration ?? Duration.zero);
+            }
+          },
+        );
+        _audioStateSubscription = _audioPlayer.playerStateStream.listen(
+          (state) {
+            if (state.processingState == ProcessingState.completed) {
+              unawaited(_audioPlayer.seek(Duration.zero));
+            }
+          },
+        );
+        final duration = await _audioPlayer.setFilePath(widget.path);
+        if (mounted) _audioDuration = duration ?? Duration.zero;
+      }
+      if (mounted) setState(() => _isLoading = false);
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _error = 'This recording could not be played: $error';
+        });
+      }
+    }
+  }
+
+  void _handleVideoUpdate() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _audioPositionSubscription?.cancel();
+    _audioDurationSubscription?.cancel();
+    _audioStateSubscription?.cancel();
+    unawaited(_audioPlayer.dispose());
+    final controller = _videoController;
+    if (controller != null) {
+      controller.removeListener(_handleVideoUpdate);
+      unawaited(controller.dispose());
+    }
+    super.dispose();
+  }
+
+  Future<void> _togglePlayback() async {
+    try {
+      if (widget.isVideo) {
+        final controller = _videoController;
+        if (controller == null) return;
+        if (controller.value.isPlaying) {
+          await controller.pause();
+        } else {
+          if (controller.value.position >= controller.value.duration) {
+            await controller.seekTo(Duration.zero);
+          }
+          await controller.play();
+        }
+      } else if (_audioPlayer.playing) {
+        await _audioPlayer.pause();
+      } else {
+        if (_audioPlayer.processingState == ProcessingState.completed) {
+          await _audioPlayer.seek(Duration.zero);
+        }
+        await _audioPlayer.play();
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() => _error = 'Playback failed: $error');
+      }
+    }
+  }
+
+  Future<void> _seekTo(double milliseconds) async {
+    final position = Duration(milliseconds: milliseconds.round());
+    try {
+      if (widget.isVideo) {
+        await _videoController?.seekTo(position);
+      } else {
+        await _audioPlayer.seek(position);
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() => _error = 'Could not seek in this recording: $error');
+      }
+    }
+  }
+
+  Duration get _position => widget.isVideo
+      ? _videoController?.value.position ?? Duration.zero
+      : _audioPosition;
+
+  Duration get _duration => widget.isVideo
+      ? _videoController?.value.duration ?? Duration.zero
+      : _audioDuration;
+
+  bool get _isPlaying => widget.isVideo
+      ? _videoController?.value.isPlaying ?? false
+      : _audioPlayer.playing;
+
+  String _formatDuration(Duration duration) {
+    final minutes = duration.inMinutes.toString().padLeft(2, '0');
+    final seconds = (duration.inSeconds % 60).toString().padLeft(2, '0');
+    return '$minutes:$seconds';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final videoController = _videoController;
+    final position = _position;
+    final duration = _duration;
+    final maxMilliseconds = duration.inMilliseconds.toDouble();
+    final sliderValue = maxMilliseconds <= 0
+        ? 0.0
+        : position.inMilliseconds
+            .toDouble()
+            .clamp(0.0, maxMilliseconds)
+            .toDouble();
+
+    return Scaffold(
+      backgroundColor: paper,
+      appBar: AppBar(
+        backgroundColor: paper,
+        foregroundColor: ink,
+        title: Text(
+          widget.isVideo ? 'Play video' : 'Play audio',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                widget.filename,
+                style: const TextStyle(
+                  color: ink,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 18),
+              Expanded(
+                child: Center(
+                  child: _isLoading
+                      ? const CircularProgressIndicator()
+                      : _error != null
+                          ? Text(
+                              _error!,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: rust),
+                            )
+                          : widget.isVideo && videoController != null
+                              ? AspectRatio(
+                                  aspectRatio:
+                                      videoController.value.aspectRatio > 0
+                                          ? videoController.value.aspectRatio
+                                          : 16 / 9,
+                                  child: ClipRRect(
+                                    borderRadius: BorderRadius.circular(18),
+                                    child: VideoPlayer(videoController),
+                                  ),
+                                )
+                              : const Icon(
+                                  Icons.graphic_eq_rounded,
+                                  color: tan,
+                                  size: 100,
+                                ),
+                ),
+              ),
+              if (!_isLoading && _error == null) ...[
+                Slider(
+                  value: sliderValue,
+                  max: maxMilliseconds > 0 ? maxMilliseconds : 1,
+                  onChanged: duration == Duration.zero ? null : _seekTo,
+                  activeColor: tan,
+                  inactiveColor: sand,
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(_formatDuration(position),
+                          style: const TextStyle(color: muted, fontSize: 11)),
+                      Text(_formatDuration(duration),
+                          style: const TextStyle(color: muted, fontSize: 11)),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Center(
+                  child: IconButton.filled(
+                    onPressed: _togglePlayback,
+                    iconSize: 32,
+                    padding: const EdgeInsets.all(18),
+                    style: IconButton.styleFrom(
+                      backgroundColor: tan,
+                      foregroundColor: Colors.white,
+                    ),
+                    icon: Icon(
+                      _isPlaying
+                          ? Icons.pause_rounded
+                          : Icons.play_arrow_rounded,
+                    ),
+                    tooltip: _isPlaying ? 'Pause recording' : 'Play recording',
+                  ),
+                ),
+                const SizedBox(height: 12),
+              ],
+            ],
+          ),
         ),
       ),
     );

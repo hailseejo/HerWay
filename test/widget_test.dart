@@ -34,6 +34,7 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('SAVED PRIVATELY IN HERWAY'), findsOneWidget);
+    expect(find.text('Tap a saved recording to play it.'), findsOneWidget);
     expect(find.byTooltip('Share with a trusted contact'), findsNothing);
   });
 

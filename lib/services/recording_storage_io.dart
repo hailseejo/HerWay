@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
+import 'package:video_player/video_player.dart';
 
 const bool isSupported = true;
 
@@ -19,6 +20,9 @@ Future<String> recordingFilePath(String name) async {
   return '${directory.path}${Platform.pathSeparator}$name';
 }
 
+VideoPlayerController videoPlayerForFile(String path) =>
+    VideoPlayerController.file(File(path));
+
 Future<void> ensureRecordingsDirectory() async {
   await (await _recordingsDirectory()).create(recursive: true);
 }
@@ -27,8 +31,7 @@ Future<void> saveRecordingFile(String sourcePath, String name) async {
   final directory = await _recordingsDirectory();
   await directory.create(recursive: true);
   final source = File(sourcePath);
-  final destination =
-      File('${directory.path}${Platform.pathSeparator}$name');
+  final destination = File('${directory.path}${Platform.pathSeparator}$name');
   await source.copy(destination.path);
   await source.delete();
 }

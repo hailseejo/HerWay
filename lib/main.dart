@@ -3,17 +3,25 @@ import 'dart:convert';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:battery_plus/battery_plus.dart';
+import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart' hide BluetoothService;
 import 'package:geolocator/geolocator.dart';
+import 'package:record/record.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/services.dart';
 
 import 'firebase_options.dart';
 import 'follow.dart';
+import 'models/safety_session.dart';
 import 'safety_mode.dart';
+import 'services/bluetooth_service.dart';
+import 'services/nearby_places_service.dart';
+import 'services/recording_storage_stub.dart'
+    if (dart.library.io) 'services/recording_storage_io.dart'
+    as recording_storage;
 
 const ink = Color(0xFF263448);
 const muted = Color(0xFF7D8285);
@@ -153,6 +161,8 @@ class _SafetyDashboardState extends State<SafetyDashboard> {
   RideTrip? _activeRide;
   Timer? _checkInTimer;
   int _checkInRemainingSeconds = 0;
+  Timer? _fakeCallTimer;
+  String? _scheduledFakeCallCaller;
 
   @override
   void initState() {
@@ -195,6 +205,7 @@ class _SafetyDashboardState extends State<SafetyDashboard> {
     _nearbyPlacesService.dispose();
     _batterySubscription?.cancel();
     _checkInTimer?.cancel();
+    _fakeCallTimer?.cancel();
     super.dispose();
   }
 
@@ -668,6 +679,54 @@ Please contact me and check on me if needed.''';
     }
   }
 
+  Future<void> _configureFakeCall() async {
+    final config = await showDialog<_FakeCallConfig>(
+      context: context,
+      builder: (context) => const _FakeCallSetupDialog(),
+    );
+    if (config == null || !mounted) return;
+
+    _fakeCallTimer?.cancel();
+    if (config.delay == Duration.zero) {
+      _launchFakeCall(config.caller);
+      return;
+    }
+
+    setState(() => _scheduledFakeCallCaller = config.caller);
+    _fakeCallTimer = Timer(config.delay, () {
+      if (!mounted) return;
+      setState(() => _scheduledFakeCallCaller = null);
+      _launchFakeCall(config.caller);
+    });
+    _message(
+      'Your simulated call is scheduled. Keep HerWay open for it to appear.',
+    );
+  }
+
+  void _cancelFakeCall() {
+    _fakeCallTimer?.cancel();
+    _fakeCallTimer = null;
+    setState(() => _scheduledFakeCallCaller = null);
+    _message('Simulated call canceled.');
+  }
+
+  void _launchFakeCall(String caller) {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        fullscreenDialog: true,
+        builder: (context) => _FakeCallScreen(caller: caller),
+      ),
+    );
+  }
+
+  void _openEvidenceRecorder() {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (context) => const _EvidenceRecorderPage(),
+      ),
+    );
+  }
+
   Future<void> _chooseCheckInDuration() async {
     final minutes = await showModalBottomSheet<int>(
       context: context,
@@ -910,6 +969,10 @@ Please contact me and check on me if needed.''';
               onAddRide: _addRide,
               onClearRide: _clearRide,
               onSendRideAlert: _sendRideAlert,
+              onFakeCall: _configureFakeCall,
+              fakeCallScheduled: _scheduledFakeCallCaller != null,
+              onCancelFakeCall: _cancelFakeCall,
+              onOpenRecorder: _openEvidenceRecorder,
             ),
             _CircleTab(
               devices: _nearbyDevices,
@@ -925,10 +988,16 @@ Please contact me and check on me if needed.''';
               onRefresh: _loadNearbyPlaces,
               onMessage: _message,
             ),
-            const _SimpleTab(
-              icon: Icons.person_outline_rounded,
-              title: 'Your profile',
-              subtitle: 'Manage your safety preferences.',
+            _ProfileTab(
+              contacts: _contacts,
+              selectedContacts: _selectedContacts,
+              places: _nearbyPlaces,
+              isLoadingPlaces: _isLoadingPlaces,
+              placesError: _placesError,
+              onRefreshPlaces: _loadNearbyPlaces,
+              onAddContact: _addContact,
+              onRemoveContact: _removeContact,
+              onMessage: _message,
             ),
           ],
         ),
@@ -939,7 +1008,7 @@ Please contact me and check on me if needed.''';
         selectedIndex: _selectedTab,
         onDestinationSelected: (value) {
           setState(() => _selectedTab = value);
-          if (value == 2 && _nearbyPlaces.isEmpty) {
+          if ((value == 2 || value == 3) && _nearbyPlaces.isEmpty) {
             _loadNearbyPlaces();
           }
         },
@@ -998,6 +1067,10 @@ class _Overview extends StatelessWidget {
     required this.onAddRide,
     required this.onClearRide,
     required this.onSendRideAlert,
+    required this.onFakeCall,
+    required this.fakeCallScheduled,
+    required this.onCancelFakeCall,
+    required this.onOpenRecorder,
   });
 
   final ValueChanged<String> onMessage;
@@ -1025,6 +1098,10 @@ class _Overview extends StatelessWidget {
   final VoidCallback onAddRide;
   final VoidCallback onClearRide;
   final VoidCallback onSendRideAlert;
+  final VoidCallback onFakeCall;
+  final bool fakeCallScheduled;
+  final VoidCallback onCancelFakeCall;
+  final VoidCallback onOpenRecorder;
 
   @override
   Widget build(BuildContext context) {
@@ -1068,6 +1145,14 @@ class _Overview extends StatelessWidget {
             selectedContact:
                 contacts.isEmpty ? null : contacts[selectedContact],
           ),
+          const SizedBox(height: 12),
+          _FakeCallCard(
+            onStart: onFakeCall,
+            scheduled: fakeCallScheduled,
+            onCancel: onCancelFakeCall,
+          ),
+          const SizedBox(height: 12),
+          _EvidenceRecorderCard(onTap: onOpenRecorder),
           const SizedBox(height: 18),
           Row(
             children: [
@@ -1212,6 +1297,959 @@ class _Overview extends StatelessWidget {
   }
 }
 
+enum _EvidenceMode { audio, video }
+
+class _EvidenceRecorderCard extends StatelessWidget {
+  const _EvidenceRecorderCard({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: card,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFECE9E0)),
+      ),
+      child: Row(
+        children: [
+          const CircleAvatar(
+            backgroundColor: softBlue,
+            child: Icon(Icons.mic_none_rounded, color: ink),
+          ),
+          const SizedBox(width: 12),
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Record audio or video',
+                  style: TextStyle(
+                    color: ink,
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                SizedBox(height: 3),
+                Text(
+                  'Visible recording · saved on this device',
+                  style: TextStyle(color: muted, fontSize: 11),
+                ),
+              ],
+            ),
+          ),
+          FilledButton(
+            onPressed: onTap,
+            style: FilledButton.styleFrom(
+              backgroundColor: tan,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Open'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EvidenceRecorderPage extends StatefulWidget {
+  const _EvidenceRecorderPage();
+
+  @override
+  State<_EvidenceRecorderPage> createState() => _EvidenceRecorderPageState();
+}
+
+class _EvidenceRecorderPageState extends State<_EvidenceRecorderPage>
+    with WidgetsBindingObserver {
+  final AudioRecorder _audioRecorder = AudioRecorder();
+  CameraController? _cameraController;
+  _EvidenceMode _mode = _EvidenceMode.audio;
+  List<String> _savedRecordings = [];
+  Timer? _elapsedTimer;
+  int _elapsedSeconds = 0;
+  bool _isRecording = false;
+  bool _isBusy = false;
+  bool _isInitializingCamera = false;
+  String? _activeFilename;
+  String? _error;
+  Future<void>? _stopFuture;
+  bool _isAppActive = true;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    if (recording_storage.isSupported) {
+      _refreshSavedRecordings();
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _isAppActive = true;
+      if (_mode == _EvidenceMode.video && recording_storage.isSupported) {
+        _initializeCamera();
+      }
+      return;
+    }
+    _isAppActive = false;
+    unawaited(_suspendCapture());
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _elapsedTimer?.cancel();
+    unawaited(_disposeCaptureResources());
+    super.dispose();
+  }
+
+  Future<void> _disposeCaptureResources() async {
+    _elapsedTimer?.cancel();
+    while (_isBusy) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    final stopping = _stopFuture;
+    if (stopping != null) {
+      await stopping;
+    } else if (_isRecording) {
+      try {
+        if (_mode == _EvidenceMode.audio) {
+          await _audioRecorder.stop();
+        } else if (_cameraController != null) {
+          final video = await _cameraController!.stopVideoRecording();
+          final filename = _activeFilename;
+          if (filename != null) {
+            await recording_storage.saveRecordingFile(
+              video.path,
+              filename,
+            );
+          }
+        }
+      } catch (error) {
+        debugPrint('Could not finish local recording while closing: $error');
+      }
+    }
+    await _releaseCamera();
+    await _audioRecorder.dispose();
+  }
+
+  Future<void> _suspendCapture() async {
+    while (_isBusy && mounted) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    if (_isRecording) await _stopRecording();
+    await _releaseCamera();
+    await _refreshSavedRecordings();
+  }
+
+  Future<void> _releaseCamera() async {
+    final controller = _cameraController;
+    _cameraController = null;
+    if (controller != null) await controller.dispose();
+  }
+
+  Future<void> _initializeCamera() async {
+    if (_isInitializingCamera || _cameraController != null || !mounted) return;
+    setState(() {
+      _isInitializingCamera = true;
+      _error = null;
+    });
+    CameraController? controller;
+    try {
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) {
+        throw StateError('No camera is available on this device.');
+      }
+      final camera = cameras.firstWhere(
+        (item) => item.lensDirection == CameraLensDirection.back,
+        orElse: () => cameras.first,
+      );
+      controller = CameraController(
+        camera,
+        ResolutionPreset.medium,
+        enableAudio: true,
+      );
+      await controller.initialize();
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
+      setState(() => _cameraController = controller);
+    } catch (error) {
+      await controller?.dispose();
+      if (mounted) {
+        setState(() => _error = 'Camera could not be started: $error');
+      }
+    } finally {
+      if (mounted) setState(() => _isInitializingCamera = false);
+    }
+  }
+
+  Future<void> _setMode(_EvidenceMode mode) async {
+    if (_isBusy || _isRecording || mode == _mode) return;
+    setState(() {
+      _mode = mode;
+      _error = null;
+    });
+    if (mode == _EvidenceMode.video) {
+      await _initializeCamera();
+    } else {
+      await _releaseCamera();
+    }
+  }
+
+  String _newFilename(_EvidenceMode mode) {
+    final timestamp =
+        DateTime.now().toIso8601String().replaceAll(RegExp(r'[:.]'), '-');
+    final extension = mode == _EvidenceMode.audio ? 'm4a' : 'mp4';
+    return '${mode.name}_$timestamp.$extension';
+  }
+
+  Future<void> _startRecording() async {
+    if (_isBusy || _isRecording) return;
+    if (!_isAppActive) {
+      setState(() => _error = 'Recording requires HerWay to be visible.');
+      return;
+    }
+    if (!recording_storage.isSupported) {
+      setState(() {
+        _error = 'Private local recording storage is not supported here.';
+      });
+      return;
+    }
+
+    setState(() {
+      _isBusy = true;
+      _error = null;
+    });
+    final filename = _newFilename(_mode);
+    CameraController? startedCamera;
+    try {
+      if (_mode == _EvidenceMode.audio) {
+        if (!await _audioRecorder.hasPermission()) {
+          throw StateError('Microphone permission was not granted.');
+        }
+        final path = await recording_storage.recordingFilePath(filename);
+        await _audioRecorder.start(
+          const RecordConfig(encoder: AudioEncoder.aacLc),
+          path: path,
+        );
+      } else {
+        final camera = _cameraController;
+        if (camera == null || !camera.value.isInitialized) {
+          throw StateError('The camera is not ready yet.');
+        }
+        startedCamera = camera;
+        await camera.startVideoRecording();
+      }
+      if (!mounted || !_isAppActive) {
+        if (_mode == _EvidenceMode.audio) {
+          await _audioRecorder.stop();
+        } else {
+          final video = await startedCamera?.stopVideoRecording();
+          if (video != null) {
+            await recording_storage.saveRecordingFile(video.path, filename);
+          }
+        }
+        throw StateError('Recording stopped because HerWay is not visible.');
+      }
+      if (!mounted) return;
+      setState(() {
+        _activeFilename = filename;
+        _isRecording = true;
+        _elapsedSeconds = 0;
+      });
+      _elapsedTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() => _elapsedSeconds++);
+      });
+    } catch (error) {
+      if (mounted) {
+        setState(() => _error = 'Recording could not start: $error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isBusy = false);
+      } else {
+        _isBusy = false;
+      }
+    }
+  }
+
+  Future<void> _stopRecording() {
+    final stopping = _stopFuture;
+    if (stopping != null) return stopping;
+    if (!_isRecording || _isBusy) return Future<void>.value();
+    final future = _stopRecordingInternal();
+    _stopFuture = future;
+    return future.whenComplete(() => _stopFuture = null);
+  }
+
+  Future<void> _stopRecordingInternal() async {
+    setState(() => _isBusy = true);
+    _elapsedTimer?.cancel();
+    final filename = _activeFilename;
+    try {
+      if (_mode == _EvidenceMode.audio) {
+        final path = await _audioRecorder.stop();
+        if (path == null) throw StateError('The audio file was not saved.');
+      } else {
+        final camera = _cameraController;
+        if (camera == null) throw StateError('The camera is no longer ready.');
+        final video = await camera.stopVideoRecording();
+        if (filename == null) {
+          throw StateError('The video file name is unavailable.');
+        }
+        await recording_storage.saveRecordingFile(video.path, filename);
+      }
+      await _refreshSavedRecordings();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Saved on this device: $filename')),
+        );
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() => _error = 'Recording could not be saved: $error');
+      }
+    } finally {
+      _isRecording = false;
+      _isBusy = false;
+      _activeFilename = null;
+      if (mounted) {
+        setState(() {});
+      }
+    }
+  }
+
+  Future<void> _refreshSavedRecordings() async {
+    try {
+      final recordings = await recording_storage.listRecordings();
+      if (mounted) setState(() => _savedRecordings = recordings);
+    } catch (error) {
+      if (mounted) {
+        setState(() => _error = 'Saved recordings could not be loaded: $error');
+      }
+    }
+  }
+
+  String get _elapsedLabel {
+    final minutes = (_elapsedSeconds ~/ 60).toString().padLeft(2, '0');
+    final seconds = (_elapsedSeconds % 60).toString().padLeft(2, '0');
+    return '$minutes:$seconds';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final camera = _cameraController;
+    return Scaffold(
+      backgroundColor: paper,
+      appBar: AppBar(
+        backgroundColor: paper,
+        foregroundColor: ink,
+        title: const Text('Private recordings'),
+      ),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.all(20),
+          children: [
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF1EDE3),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: const Text(
+                'Recording is visible and only starts when you press Record. It stops if you leave this screen or the app. Recordings are saved privately inside HerWay on this device and are not shared or uploaded.',
+                style: TextStyle(color: ink, fontSize: 12, height: 1.45),
+              ),
+            ),
+            const SizedBox(height: 18),
+            SegmentedButton<_EvidenceMode>(
+              segments: const [
+                ButtonSegment(
+                  value: _EvidenceMode.audio,
+                  icon: Icon(Icons.mic_none_rounded),
+                  label: Text('Audio'),
+                ),
+                ButtonSegment(
+                  value: _EvidenceMode.video,
+                  icon: Icon(Icons.videocam_outlined),
+                  label: Text('Video'),
+                ),
+              ],
+              selected: {_mode},
+              onSelectionChanged: _isRecording || _isBusy
+                  ? null
+                  : (selection) => _setMode(selection.first),
+            ),
+            const SizedBox(height: 16),
+            if (_mode == _EvidenceMode.video)
+              Container(
+                height: 260,
+                alignment: Alignment.center,
+                clipBehavior: Clip.antiAlias,
+                decoration: BoxDecoration(
+                  color: ink,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: camera?.value.isInitialized == true
+                    ? CameraPreview(camera!)
+                    : Text(
+                        _isInitializingCamera
+                            ? 'Opening camera…'
+                            : 'Camera preview will appear here',
+                        style: const TextStyle(color: Colors.white),
+                      ),
+              )
+            else
+              Container(
+                height: 180,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: softBlue,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Icon(
+                  _isRecording
+                      ? Icons.graphic_eq_rounded
+                      : Icons.mic_none_rounded,
+                  color: ink,
+                  size: 56,
+                ),
+              ),
+            if (_isRecording) ...[
+              const SizedBox(height: 14),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.circle, color: rust, size: 12),
+                  const SizedBox(width: 8),
+                  Text(
+                    'RECORDING  $_elapsedLabel',
+                    style: const TextStyle(
+                      color: rust,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 0.6,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: _isBusy
+                  ? null
+                  : _isRecording
+                      ? _stopRecording
+                      : _startRecording,
+              style: FilledButton.styleFrom(
+                backgroundColor: _isRecording ? rust : tan,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+              ),
+              icon: Icon(
+                _isRecording ? Icons.stop_rounded : Icons.fiber_manual_record,
+              ),
+              label: Text(
+                _isBusy
+                    ? 'Please wait…'
+                    : _isRecording
+                        ? 'Stop and save'
+                        : 'Record ${_mode.name}',
+              ),
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                _error!,
+                style: const TextStyle(color: rust, fontSize: 12),
+              ),
+            ],
+            const SizedBox(height: 24),
+            const Text(
+              'SAVED PRIVATELY IN HERWAY',
+              style: TextStyle(
+                color: muted,
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 1.4,
+              ),
+            ),
+            const SizedBox(height: 8),
+            if (_savedRecordings.isEmpty)
+              const Text(
+                'No recordings yet.',
+                style: TextStyle(color: muted, fontSize: 12),
+              )
+            else
+              for (final filename in _savedRecordings.take(8))
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    filename.endsWith('.mp4')
+                        ? Icons.videocam_outlined
+                        : Icons.audio_file_outlined,
+                    color: tan,
+                  ),
+                  title: Text(
+                    filename,
+                    style: const TextStyle(color: ink, fontSize: 12),
+                  ),
+                ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FakeCallConfig {
+  const _FakeCallConfig({required this.caller, required this.delay});
+
+  final String caller;
+  final Duration delay;
+}
+
+class _FakeCallCard extends StatelessWidget {
+  const _FakeCallCard({
+    required this.onStart,
+    required this.scheduled,
+    required this.onCancel,
+  });
+
+  final VoidCallback onStart;
+  final bool scheduled;
+  final VoidCallback onCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF1EDE3),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFECE9E0)),
+      ),
+      child: Row(
+        children: [
+          const CircleAvatar(
+            backgroundColor: sand,
+            child: Icon(Icons.phone_callback_rounded, color: ink),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Need an exit?',
+                  style: TextStyle(
+                    color: ink,
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  scheduled
+                      ? 'A simulated call is scheduled'
+                      : 'Set up a simulated incoming call',
+                  style: const TextStyle(color: muted, fontSize: 11),
+                ),
+              ],
+            ),
+          ),
+          if (scheduled)
+            IconButton(
+              onPressed: onCancel,
+              tooltip: 'Cancel simulated call',
+              icon: const Icon(Icons.close_rounded, color: rust),
+            )
+          else
+            FilledButton(
+              onPressed: onStart,
+              style: FilledButton.styleFrom(
+                backgroundColor: tan,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Set up'),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FakeCallSetupDialog extends StatefulWidget {
+  const _FakeCallSetupDialog();
+
+  @override
+  State<_FakeCallSetupDialog> createState() => _FakeCallSetupDialogState();
+}
+
+class _FakeCallSetupDialogState extends State<_FakeCallSetupDialog> {
+  final _callerController = TextEditingController(text: 'Alex Morgan');
+  int _delaySeconds = 30;
+
+  @override
+  void dispose() {
+    _callerController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Set up a simulated call'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextField(
+            controller: _callerController,
+            textCapitalization: TextCapitalization.words,
+            decoration: const InputDecoration(
+              labelText: 'Caller name',
+              hintText: 'For example, Alex',
+            ),
+          ),
+          const SizedBox(height: 16),
+          DropdownButtonFormField<int>(
+            initialValue: _delaySeconds,
+            decoration:
+                const InputDecoration(labelText: 'When should it ring?'),
+            items: const [
+              DropdownMenuItem(value: 0, child: Text('Right now')),
+              DropdownMenuItem(value: 30, child: Text('In 30 seconds')),
+              DropdownMenuItem(value: 60, child: Text('In 1 minute')),
+              DropdownMenuItem(value: 300, child: Text('In 5 minutes')),
+            ],
+            onChanged: (value) {
+              if (value != null) setState(() => _delaySeconds = value);
+            },
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            'This only shows a simulated call inside HerWay. It does not connect to a real phone number. Keep the app open until it appears.',
+            style: TextStyle(color: muted, fontSize: 12, height: 1.4),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () {
+            final caller = _callerController.text.trim();
+            if (caller.isEmpty) return;
+            Navigator.pop(
+              context,
+              _FakeCallConfig(
+                caller: caller,
+                delay: Duration(seconds: _delaySeconds),
+              ),
+            );
+          },
+          style: FilledButton.styleFrom(
+            backgroundColor: tan,
+            foregroundColor: Colors.white,
+          ),
+          child: const Text('Set call'),
+        ),
+      ],
+    );
+  }
+}
+
+class _FakeCallScreen extends StatefulWidget {
+  const _FakeCallScreen({required this.caller});
+
+  final String caller;
+
+  @override
+  State<_FakeCallScreen> createState() => _FakeCallScreenState();
+}
+
+class _FakeCallScreenState extends State<_FakeCallScreen> {
+  Timer? _durationTimer;
+  Timer? _ringTimer;
+  Timer? _ringPulseTimer;
+  int _elapsedSeconds = 0;
+  bool _answered = false;
+  bool _muted = false;
+  bool _speaker = false;
+  bool _ringSoundUnavailable = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _playRingtonePulse();
+    _ringTimer = Timer.periodic(
+      const Duration(seconds: 2),
+      (_) => _playRingtonePulse(),
+    );
+  }
+
+  @override
+  void dispose() {
+    _durationTimer?.cancel();
+    _ringTimer?.cancel();
+    _ringPulseTimer?.cancel();
+    super.dispose();
+  }
+
+  void _answer() {
+    _ringTimer?.cancel();
+    _ringPulseTimer?.cancel();
+    setState(() => _answered = true);
+    _durationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() => _elapsedSeconds++);
+    });
+  }
+
+  void _playRingtonePulse() {
+    if (_answered || _ringSoundUnavailable) return;
+    unawaited(_playAlertSound());
+    _ringPulseTimer?.cancel();
+    _ringPulseTimer = Timer(const Duration(milliseconds: 450), () {
+      if (!_answered && mounted) unawaited(_playAlertSound());
+    });
+  }
+
+  Future<void> _playAlertSound() async {
+    try {
+      await SystemSound.play(SystemSoundType.alert);
+    } on MissingPluginException {
+      _handleRingtoneUnavailable();
+    } on PlatformException catch (error) {
+      debugPrint('Simulated call ringtone failed: ${error.message}');
+      _handleRingtoneUnavailable();
+    }
+  }
+
+  void _handleRingtoneUnavailable() {
+    _ringTimer?.cancel();
+    _ringPulseTimer?.cancel();
+    if (mounted) setState(() => _ringSoundUnavailable = true);
+  }
+
+  String get _duration {
+    final minutes = (_elapsedSeconds ~/ 60).toString().padLeft(2, '0');
+    final seconds = (_elapsedSeconds % 60).toString().padLeft(2, '0');
+    return '$minutes:$seconds';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: paper,
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(28, 18, 28, 24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.shield_outlined, size: 16, color: muted),
+                  SizedBox(width: 6),
+                  Text(
+                    'HERWAY SIMULATED CALL',
+                    style: TextStyle(
+                      color: muted,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.2,
+                    ),
+                  ),
+                ],
+              ),
+              Column(
+                children: [
+                  CircleAvatar(
+                    radius: 48,
+                    backgroundColor: sand,
+                    child: Text(
+                      widget.caller.trim().substring(0, 1).toUpperCase(),
+                      style: const TextStyle(
+                        color: ink,
+                        fontSize: 36,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Text(
+                    widget.caller,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: ink,
+                      fontSize: 30,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    _answered ? _duration : 'Incoming call · mobile',
+                    style: const TextStyle(color: muted, fontSize: 14),
+                  ),
+                  if (!_answered && _ringSoundUnavailable) ...[
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Ringtone unavailable on this device',
+                      style: TextStyle(color: muted, fontSize: 11),
+                    ),
+                  ],
+                ],
+              ),
+              if (_answered)
+                Column(
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        _CallToggle(
+                          icon: _muted ? Icons.mic_off_rounded : Icons.mic_none,
+                          label: 'Mute',
+                          selected: _muted,
+                          onTap: () => setState(() => _muted = !_muted),
+                        ),
+                        _CallToggle(
+                          icon: Icons.dialpad_rounded,
+                          label: 'Keypad',
+                          onTap: () {},
+                        ),
+                        _CallToggle(
+                          icon: _speaker
+                              ? Icons.volume_up_rounded
+                              : Icons.volume_down_rounded,
+                          label: 'Speaker',
+                          selected: _speaker,
+                          onTap: () => setState(() => _speaker = !_speaker),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 34),
+                    _CallActionButton(
+                      icon: Icons.call_end_rounded,
+                      label: 'End call',
+                      color: rust,
+                      onTap: () => Navigator.of(context).pop(),
+                    ),
+                  ],
+                )
+              else
+                Column(
+                  children: [
+                    const Text(
+                      'This is a simulation. No real call is connected.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: muted, fontSize: 11),
+                    ),
+                    const SizedBox(height: 24),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        _CallActionButton(
+                          icon: Icons.call_end_rounded,
+                          label: 'Decline',
+                          color: rust,
+                          onTap: () => Navigator.of(context).pop(),
+                        ),
+                        _CallActionButton(
+                          icon: Icons.call_rounded,
+                          label: 'Answer',
+                          color: const Color(0xFF658872),
+                          onTap: _answer,
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CallActionButton extends StatelessWidget {
+  const _CallActionButton({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final Color color;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        IconButton.filled(
+          onPressed: onTap,
+          style: IconButton.styleFrom(
+            backgroundColor: color,
+            foregroundColor: Colors.white,
+            fixedSize: const Size(64, 64),
+          ),
+          icon: Icon(icon, size: 28),
+        ),
+        const SizedBox(height: 8),
+        Text(label, style: const TextStyle(color: ink, fontSize: 12)),
+      ],
+    );
+  }
+}
+
+class _CallToggle extends StatelessWidget {
+  const _CallToggle({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.selected = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        IconButton.filledTonal(
+          onPressed: onTap,
+          style: IconButton.styleFrom(
+            backgroundColor: selected ? sand : card,
+            foregroundColor: ink,
+            fixedSize: const Size(56, 56),
+          ),
+          icon: Icon(icon),
+        ),
+        const SizedBox(height: 6),
+        Text(label, style: const TextStyle(color: ink, fontSize: 11)),
+      ],
+    );
+  }
+}
+
 class _SafetyCard extends StatelessWidget {
   const _SafetyCard({
     required this.onMessage,
@@ -1294,14 +2332,32 @@ class _SafetyCard extends StatelessWidget {
               onLongPress: () {
                 onMessage('Your safety circle has been alerted.');
                 Navigator.of(context).push(
-                  MaterialPageRoute(builder: (context) => const SafetyModePage()),
+                  MaterialPageRoute(
+                      builder: (context) => const SafetyModePage()),
                 );
               },
+              onTap: onCallEmergency,
               child: Container(
                 height: 62,
                 decoration: BoxDecoration(
                   color: rust,
                   borderRadius: BorderRadius.circular(18),
+                ),
+                child: const Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.phone_in_talk_rounded, color: Colors.white),
+                    SizedBox(width: 9),
+                    Text(
+                      'CALL EMERGENCY SERVICES (112)',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 0.4,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -2375,36 +3431,290 @@ class _PlacesTab extends StatelessWidget {
   }
 }
 
-class _SimpleTab extends StatelessWidget {
-  const _SimpleTab(
-      {required this.icon, required this.title, required this.subtitle});
+class _ProfileTab extends StatelessWidget {
+  const _ProfileTab({
+    required this.contacts,
+    required this.selectedContacts,
+    required this.places,
+    required this.isLoadingPlaces,
+    required this.placesError,
+    required this.onRefreshPlaces,
+    required this.onAddContact,
+    required this.onRemoveContact,
+    required this.onMessage,
+  });
 
-  final IconData icon;
+  final List<TrustedContact> contacts;
+  final Set<TrustedContact> selectedContacts;
+  final List<NearbyPlace> places;
+  final bool isLoadingPlaces;
+  final String? placesError;
+  final VoidCallback onRefreshPlaces;
+  final VoidCallback onAddContact;
+  final ValueChanged<TrustedContact> onRemoveContact;
+  final ValueChanged<String> onMessage;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 24, 20, 32),
+      children: [
+        const Text(
+          'YOUR PROFILE',
+          style: TextStyle(
+            color: muted,
+            fontSize: 10,
+            fontWeight: FontWeight.bold,
+            letterSpacing: 1.7,
+          ),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Your safety details',
+          style: TextStyle(
+            color: ink,
+            fontSize: 27,
+            fontWeight: FontWeight.w800,
+            letterSpacing: -1,
+          ),
+        ),
+        const SizedBox(height: 18),
+        Container(
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            color: card,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: const Color(0xFFECE9E0)),
+          ),
+          child: Row(
+            children: [
+              const CircleAvatar(
+                radius: 28,
+                backgroundColor: sand,
+                child: Text(
+                  'A',
+                  style: TextStyle(
+                    color: ink,
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Alex',
+                      style: TextStyle(
+                        color: ink,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'HerWay member',
+                      style: TextStyle(color: muted, fontSize: 12),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '${contacts.length} trusted ${contacts.length == 1 ? 'contact' : 'contacts'}',
+                      style: const TextStyle(color: muted, fontSize: 11),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(Icons.verified_user_outlined, color: tan),
+            ],
+          ),
+        ),
+        const SizedBox(height: 26),
+        Row(
+          children: [
+            const Expanded(
+              child: _ProfileSectionTitle(
+                title: 'Trusted contacts',
+                subtitle: 'Your safety circle',
+              ),
+            ),
+            TextButton.icon(
+              onPressed: onAddContact,
+              icon: const Icon(Icons.add_rounded, size: 18),
+              label: const Text('Add'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        if (contacts.isEmpty)
+          const _ProfileEmptyCard(
+            icon: Icons.people_outline_rounded,
+            message: 'No trusted contacts yet. Add someone you trust.',
+          )
+        else
+          ...contacts.map(
+            (contact) => Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              decoration: BoxDecoration(
+                color: card,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0xFFECE9E0)),
+              ),
+              child: ListTile(
+                leading: const CircleAvatar(
+                  backgroundColor: softBlue,
+                  child: Icon(Icons.person_outline_rounded, color: ink),
+                ),
+                title: Text(
+                  contact.name,
+                  style: const TextStyle(
+                    color: ink,
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                subtitle: Text(
+                  '${contact.phone} · ${selectedContacts.contains(contact) ? 'Selected for alerts' : 'Not selected for alerts'}',
+                  style: const TextStyle(color: muted, fontSize: 12),
+                ),
+                trailing: IconButton(
+                  tooltip: 'Remove ${contact.name}',
+                  onPressed: () => onRemoveContact(contact),
+                  icon: const Icon(Icons.delete_outline_rounded, color: muted),
+                ),
+              ),
+            ),
+          ),
+        const SizedBox(height: 26),
+        Row(
+          children: [
+            const Expanded(
+              child: _ProfileSectionTitle(
+                title: 'Nearby safe places',
+                subtitle: 'Police, hospitals, and public places near you',
+              ),
+            ),
+            IconButton(
+              onPressed: isLoadingPlaces ? null : onRefreshPlaces,
+              tooltip: 'Refresh nearby safe places',
+              icon: isLoadingPlaces
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.refresh_rounded, color: tan),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        if (placesError != null)
+          _ProfileEmptyCard(
+            icon: Icons.info_outline_rounded,
+            message: placesError!,
+          )
+        else if (places.isEmpty)
+          _ProfileEmptyCard(
+            icon: Icons.location_searching_rounded,
+            message: isLoadingPlaces
+                ? 'Finding safe places near you…'
+                : 'Use your location to find nearby safe places.',
+            loading: isLoadingPlaces,
+            actionLabel: isLoadingPlaces ? null : 'Find places',
+            onAction: isLoadingPlaces ? null : onRefreshPlaces,
+          )
+        else
+          ...places.map(
+            (place) => Padding(
+              padding: const EdgeInsets.only(bottom: 9),
+              child: _NearbyPlaceTile(place: place, onMessage: onMessage),
+            ),
+          ),
+        if (places.isNotEmpty)
+          const Padding(
+            padding: EdgeInsets.only(top: 2),
+            child: Text(
+              'Nearby place information comes from OpenStreetMap and may be incomplete.',
+              style: TextStyle(color: muted, fontSize: 11, height: 1.4),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _ProfileSectionTitle extends StatelessWidget {
+  const _ProfileSectionTitle({required this.title, required this.subtitle});
+
   final String title;
   final String subtitle;
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(30),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(icon, color: tan, size: 45),
-            const SizedBox(height: 16),
-            Text(
-              title,
-              style: const TextStyle(
-                color: ink,
-                fontSize: 23,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-            const SizedBox(height: 7),
-            Text(subtitle, style: const TextStyle(color: muted)),
-          ],
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: const TextStyle(
+            color: ink,
+            fontSize: 17,
+            fontWeight: FontWeight.bold,
+          ),
         ),
+        const SizedBox(height: 3),
+        Text(subtitle, style: const TextStyle(color: muted, fontSize: 11)),
+      ],
+    );
+  }
+}
+
+class _ProfileEmptyCard extends StatelessWidget {
+  const _ProfileEmptyCard({
+    required this.icon,
+    required this.message,
+    this.loading = false,
+    this.actionLabel,
+    this.onAction,
+  });
+
+  final IconData icon;
+  final String message;
+  final bool loading;
+  final String? actionLabel;
+  final VoidCallback? onAction;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: card,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFECE9E0)),
+      ),
+      child: Row(
+        children: [
+          if (loading)
+            const SizedBox(
+              width: 22,
+              height: 22,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          else
+            Icon(icon, color: tan),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              message,
+              style: const TextStyle(color: muted, fontSize: 12, height: 1.4),
+            ),
+          ),
+          if (actionLabel != null)
+            TextButton(onPressed: onAction, child: Text(actionLabel!)),
+        ],
       ),
     );
   }

@@ -2,6 +2,17 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>HerWay uses your location to include an optional map link in an SOS message.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>HerWay uses Bluetooth to find nearby HerWay users who can help in an emergency.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>HerWay uses Bluetooth to find nearby HerWay users who can help in an emergency.</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>sms</string>
+		<string>tel</string>
+	</array>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>

@@ -11,12 +11,15 @@ class AppBluetoothService {
   final Map<String, BleDeviceObservation> _observations = {};
   final StreamController<List<BleDeviceObservation>> _observationsController =
       StreamController<List<BleDeviceObservation>>.broadcast();
+  final StreamController<Object> _errorsController =
+      StreamController<Object>.broadcast();
 
   StreamSubscription<List<ScanResult>>? _scanSubscription;
   StreamSubscription<bool>? _isScanningSubscription;
 
   /// Stream of adapter state changes (e.g. on, off, unauthorized, unavailable).
-  Stream<BluetoothAdapterState> get adapterState => FlutterBluePlus.adapterState;
+  Stream<BluetoothAdapterState> get adapterState =>
+      FlutterBluePlus.adapterState;
 
   /// Stream indicating whether a scan is currently in progress.
   Stream<bool> get isScanning => FlutterBluePlus.isScanning;
@@ -27,6 +30,8 @@ class AppBluetoothService {
   /// Stream of discovered nearby BLE observations, sorted by signal strength.
   Stream<List<BleDeviceObservation>> get observationsStream =>
       _observationsController.stream;
+
+  Stream<Object> get errorsStream => _errorsController.stream;
 
   /// Current snapshot of observed devices.
   List<BleDeviceObservation> get currentObservations {
@@ -74,7 +79,9 @@ class AppBluetoothService {
     _scanSubscription = FlutterBluePlus.scanResults.listen(
       _handleScanResults,
       onError: (Object error) {
-        // Stream errors handled without crashing
+        if (!_errorsController.isClosed) {
+          _errorsController.add(error);
+        }
       },
     );
 
@@ -82,7 +89,7 @@ class AppBluetoothService {
     try {
       await FlutterBluePlus.startScan(
         timeout: timeout,
-        androidUsesFineLocation: false,
+        androidUsesFineLocation: true,
       );
     } catch (e) {
       await stopScan();
@@ -162,9 +169,9 @@ class AppBluetoothService {
     _scanSubscription?.cancel();
     _isScanningSubscription?.cancel();
     _observationsController.close();
+    _errorsController.close();
   }
 }
 
 /// Alias for compatibility with previous naming
 typedef BluetoothService = AppBluetoothService;
-
